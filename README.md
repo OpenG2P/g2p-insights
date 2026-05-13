@@ -1,0 +1,789 @@
+# G2P Insight
+
+**AI-driven analytics and insight platform for OpenG2P registries.**
+
+G2P Insight lets non-technical administrators, analysts, and data scientists explore registry data through:
+
+1. **Dashboards** — fixed, drillable visualizations served by Apache Superset, authored either manually or generated from natural language.
+2. **Ad-hoc natural-language queries** — typed questions are translated to safe SQL, executed locally, and returned as result + chart + assumptions.
+3. **Expert analytics** — statistical functions (distributions, correlations, overlaps, cross-tabs) operating on aggregated, PII-stripped data.
+
+Built to be deployed per-country into the existing OpenG2P Kubernetes stack alongside services like `openg2p-audit-manager`, registries (e.g. `farmer-registry`), and the OpenG2P Master Data Service.
+
+---
+
+## Table of contents
+
+1. [Scope and non-goals](#1-scope-and-non-goals)
+2. [Architecture](#2-architecture)
+3. [Repository layout](#3-repository-layout)
+4. [Tech stack](#4-tech-stack)
+5. [Schema catalog — generation and structure](#5-schema-catalog--generation-and-structure)
+6. [Master Data Service integration](#6-master-data-service-integration)
+7. [Core data flows](#7-core-data-flows)
+8. [PII protection](#8-pii-protection)
+9. [Cost gate and query safety](#9-cost-gate-and-query-safety)
+10. [k-anonymity and result safety](#10-k-anonymity-and-result-safety)
+11. [Roles and access](#11-roles-and-access)
+12. [Frontend — UI and branding](#12-frontend--ui-and-branding)
+13. [Deployment — Docker, Helm, Kubernetes](#13-deployment--docker-helm-kubernetes)
+14. [Configuration](#14-configuration)
+15. [Audit and observability](#15-audit-and-observability)
+16. [Roadmap](#16-roadmap)
+17. [Open items](#17-open-items)
+
+---
+
+## 1. Scope and non-goals
+
+### MVP scope
+
+| In | Out (deferred) |
+|----|----------------|
+| FastAPI backend on `openg2p-fastapi-common` | Keycloak login (post-MVP; stubbed admin token for now) |
+| Schema catalog generator from registry SQLAlchemy models | Cube.dev semantic layer |
+| Per-deployment YAML catalog (manual edits after generation) | OpenSearch / Elasticsearch backend |
+| Local PII proxy (Presidio + spaCy) before any cloud LLM call | Local / air-gapped LLM |
+| Cloud LLM (Anthropic Claude) via tool-use; key per deployment | Air-gapped deployment mode |
+| NL → intent JSON → safe SQL → execute locally → result + viz | Differential privacy noise |
+| Cost gate (EXPLAIN + static checks) with user warnings | Empirical cost-threshold auto-tuning |
+| k-anonymity on results (default `k=5`, per-deployment override) | Per-role `k` thresholds |
+| Generic statistical engine; one reference function (e.g. distribution) | Full library of expert functions |
+| Apache Superset chart authoring via REST API (configurable URL) | Superset shipped under our chart |
+| Geographic drill-down using Master Data Service `/geo/*` endpoints | Multi-language UI (English only in MVP) |
+| React + TypeScript frontend with G2P Insight branding | Watermarked exports |
+| Backend-rendered chart preview before Superset save | Multi-turn conversation memory |
+| Helm chart following OpenG2P conventions; deployable to K8s | Multi-tenant isolation |
+| Audit log written to local DB (integration with central audit later) | — |
+
+### Non-goals
+
+- **Not a transactional system.** All DB access by the analytics role is read-only against PII-stripped views and materialized views.
+- **Not a custom BI tool.** Standard dashboarding leans on Apache Superset; we do not reimplement what Superset gives us.
+- **Not air-gapped in MVP.** The cloud LLM is required. Air-gapped LLM is a v2 capability.
+
+---
+
+## 2. Architecture
+
+```
+┌───────────────────────────────────────────────────────────────────────┐
+│  React + TypeScript frontend (g2p-insight-ui)                          │
+│  Title bar: #061327 (almost-black) with G2P Insight dark logo          │
+│  ┌──────────────┬──────────────┬──────────────┬─────────────────────┐  │
+│  │ Dashboards   │ Ask          │ Expert Lab   │ Admin               │  │
+│  │ (Superset    │ (NL chat,    │ (Plotly,     │ (schema catalog,    │  │
+│  │  embedded)   │  chart       │  drill-down  │  audit log)         │  │
+│  │              │  render)     │  map)        │                     │  │
+│  └──────────────┴──────────────┴──────────────┴─────────────────────┘  │
+└───────────────────────────┬──────────────────────────┬─────────────────┘
+                            │                          │ Superset
+                            │ REST                     │ embedded-sdk
+                            ▼                          ▼
+┌──────────────────────────────────────────────┐  ┌─────────────────────┐
+│  g2p-insight (FastAPI, openg2p-fastapi-      │  │  Apache Superset    │
+│  common)                                      │  │  (existing OpenG2P  │
+│                                               │  │   deployment, e.g.  │
+│  ┌─────────────────────────────────────────┐ │  │   superset.qa2.     │
+│  │ PII Service (Presidio + spaCy)          │ │  │   openg2p.org)      │
+│  └──────────────────┬──────────────────────┘ │  │                     │
+│                     ▼                         │  │  Configurable URL.  │
+│  ┌─────────────────────────────────────────┐ │  └──────────┬──────────┘
+│  │ Schema Service                          │ │             │
+│  │ (catalog YAML + pgvector retrieval)     │ │             │
+│  └──────────────────┬──────────────────────┘ │             │
+│                     ▼                         │             │
+│  ┌─────────────────────────────────────────┐ │             │
+│  │ LLM Service (Claude tool-use loop)      │◄┼─ schema +   │
+│  │   - get_schema, get_exchange_rate,      │ │  sanitized  │
+│  │     get_geo_levels, propose_intent      │ │  query only │
+│  └──────────────────┬──────────────────────┘ │             │
+│                     ▼                         │             │
+│  ┌─────────────────────────────────────────┐ │             │
+│  │ SQL Planner (intent JSON → safe SQL)    │ │             │
+│  └──────────────────┬──────────────────────┘ │             │
+│                     ▼                         │             │
+│  ┌─────────────────────────────────────────┐ │             │
+│  │ Cost Gate (EXPLAIN + static analysis)   │ │             │
+│  └──────────────────┬──────────────────────┘ │             │
+│                     ▼                         │             │
+│  ┌─────────────────────┬───────────────────┐ │             │
+│  │ Query Executor      │ Analytics Engine  │ │             │
+│  │ (read-only role,    │ (pandas/scipy,    │ │             │
+│  │  statement timeout, │  function         │ │             │
+│  │  k-anonymity)       │  registry)        │ │             │
+│  └──────────┬──────────┴─────────┬─────────┘ │             │
+│             │                    │           │             │
+│             ▼                    ▼           │             │
+│  ┌─────────────────────┬───────────────────┐ │             │
+│  │ Superset Client     │ Audit Logger      │─┼─────────────┘
+│  └─────────────────────┴───────────────────┘ │
+└──────────────────┬───────────────────────────┘
+                   │ SELECT only on safe views
+                   ▼
+┌───────────────────────────────────────────────────────────────────────┐
+│  PostgreSQL                                                            │
+│  ┌────────────────────────────┐  ┌────────────────────────────────┐   │
+│  │ Registry schemas           │  │ insight schema (owned by app)  │   │
+│  │ (e.g. farmer-registry):    │  │   - audit_log                  │   │
+│  │   raw tables (have PII)    │  │   - chat_session               │   │
+│  │   v_*_safe (PII stripped)  │  │   - saved_chart                │   │
+│  │   mv_* (materialized,      │  │   - catalog_versions           │   │
+│  │         aggregated)        │  │   - schema_embeddings          │   │
+│  │   pgvector index           │  │     (pgvector)                 │   │
+│  └────────────────────────────┘  └────────────────────────────────┘   │
+└───────────────────────────────────────────────────────────────────────┘
+
+External:
+  • OpenG2P Master Data Service  → /geo/get_g2p_geo_levels, /geo/get_g2p_geo_level_values
+  • Anthropic Claude API          → only sanitized query + schema metadata leave the cluster
+  • OpenG2P Audit Manager         → integration target post-MVP
+  • Keycloak                      → integration target post-MVP
+```
+
+---
+
+## 3. Repository layout
+
+```
+g2p-insight/
+├── README.md                          ← this file
+├── LICENSE                            ← MPL 2.0 (OpenG2P standard)
+│
+├── backend/                           ← FastAPI service (g2p-insight)
+│   ├── pyproject.toml
+│   ├── Dockerfile                     ← multi-stage, python:3.13-slim
+│   ├── docker-entrypoint.sh
+│   ├── docker-compose.yaml            ← local-dev convenience
+│   ├── config/
+│   │   └── default.yaml
+│   ├── src/openg2p_insight/
+│   │   ├── __init__.py
+│   │   ├── app.py                     ← Initializer (extends common)
+│   │   ├── config.py                  ← Settings (extends common Settings)
+│   │   ├── controllers/
+│   │   │   ├── chat_controller.py            # POST /ask, GET /ask/{sid}
+│   │   │   ├── dashboard_controller.py       # POST /dashboards/charts
+│   │   │   ├── analytics_controller.py       # POST /analytics/{function}
+│   │   │   ├── catalog_controller.py         # GET/PUT /catalog
+│   │   │   ├── geo_controller.py             # GET /geo/levels, /geo/values
+│   │   │   └── audit_controller.py
+│   │   ├── services/
+│   │   │   ├── pii_service.py
+│   │   │   ├── schema_service.py
+│   │   │   ├── llm_service.py
+│   │   │   ├── sql_planner_service.py
+│   │   │   ├── cost_gate_service.py
+│   │   │   ├── query_executor_service.py
+│   │   │   ├── analytics_service.py
+│   │   │   ├── superset_service.py
+│   │   │   ├── masterdata_service.py
+│   │   │   └── audit_service.py
+│   │   ├── models/                            # SQLAlchemy (insight schema)
+│   │   ├── schemas/                           # Pydantic
+│   │   ├── prompts/                           # Claude system prompts
+│   │   ├── analysis_functions/                # registered Python fns
+│   │   │   ├── __init__.py                    #   ANALYSIS_REGISTRY
+│   │   │   ├── distribution.py
+│   │   │   ├── correlation.py
+│   │   │   ├── crosstab.py
+│   │   │   └── overlap.py
+│   │   └── utils/
+│   ├── catalog/                       ← per-deployment YAML, mounted via ConfigMap
+│   │   ├── schema.example.yaml
+│   │   ├── pii_recognizers.example.yaml
+│   │   └── viz_templates.example.yaml
+│   ├── scripts/
+│   │   └── generate_catalog.py        ← see §5; inspects registry SQLAlchemy models
+│   ├── migrations/                    ← Alembic
+│   └── tests/
+│
+├── frontend/                          ← React + TS + Vite (g2p-insight-ui)
+│   ├── package.json
+│   ├── vite.config.ts
+│   ├── tsconfig.json
+│   ├── Dockerfile                     ← multi-stage; nginx for runtime
+│   ├── nginx.conf
+│   ├── public/
+│   │   └── logos/                     ← G2P INSIGHT dark logo, copied from branding
+│   ├── src/
+│   │   ├── theme.ts                   ← Ant Design theme with G2P palette
+│   │   ├── pages/
+│   │   │   ├── Dashboards.tsx
+│   │   │   ├── Ask.tsx
+│   │   │   ├── ExpertLab.tsx
+│   │   │   ├── Catalog.tsx
+│   │   │   └── Audit.tsx
+│   │   ├── components/
+│   │   │   ├── TitleBar.tsx           ← #061327 background, dark logo
+│   │   │   ├── ChatPanel.tsx
+│   │   │   ├── ChartRenderer.tsx      ← Plotly
+│   │   │   ├── DrilldownMap.tsx       ← deck.gl
+│   │   │   ├── CostWarning.tsx
+│   │   │   ├── AssumptionsPanel.tsx
+│   │   │   ├── PiiBadge.tsx
+│   │   │   └── SupersetEmbed.tsx
+│   │   ├── api/                       ← generated from backend OpenAPI
+│   │   ├── auth/                      ← Keycloak adapter, stubbed in MVP
+│   │   ├── i18n/                      ← English only in MVP, scaffold present
+│   │   └── App.tsx
+│   └── tests/
+│
+├── helm/
+│   └── g2p-insight/                   ← umbrella chart
+│       ├── Chart.yaml                 ← depends on common-2.30.0, postgres-init-1.1.0
+│       ├── values.yaml
+│       ├── templates/
+│       │   ├── _helpers.tpl
+│       │   ├── configmap-catalog.yaml ← mounts catalog/*.yaml
+│       │   └── secret-llm.yaml        ← Claude API key (stub; provided externally)
+│       ├── charts/
+│       │   ├── insight-backend/
+│       │   └── insight-frontend/
+│       └── questions.yaml             ← Rancher catalog metadata
+│
+└── docs/
+    ├── architecture.md
+    ├── catalog-format.md
+    ├── pii-strategy.md
+    └── llm-prompts.md
+```
+
+---
+
+## 4. Tech stack
+
+| Layer | Choice | Notes |
+|-------|--------|-------|
+| Backend framework | **FastAPI** via [openg2p-fastapi-common](https://github.com/OpenG2P/openg2p-fastapi-common) | Controller / Service / Component pattern; same as `audit-manager`, `farmer-registry`. |
+| Python runtime | 3.13 (slim) | Match `audit-manager` base. |
+| Async DB | SQLAlchemy 2.x async + asyncpg | Common library convention. |
+| Migrations | Alembic | Standard. |
+| LLM | **Anthropic Claude** via official SDK, tool-use loop | Per-deployment API key (Kubernetes secret). |
+| PII | **Microsoft Presidio** + **spaCy `en_core_web_lg`** | Country-specific recognizers in catalog. |
+| Embeddings (local) | **sentence-transformers `all-MiniLM-L6-v2`** + **pgvector** | Schema RAG without cloud calls. |
+| Stats | **pandas, scipy, numpy, statsmodels** | Function registry pattern. |
+| BI engine | **Apache Superset** (existing OpenG2P deployment) | URL configurable, e.g. `superset.qa2.openg2p.org`. |
+| Frontend | **React 18 + TypeScript + Vite** | Modern, fast. |
+| UI kit | **Ant Design 5** themed to G2P palette | Strong dashboard primitives. |
+| Charts (custom) | **Plotly.js** | Analytical, exportable, interactive. |
+| Maps | **deck.gl + MapLibre GL** (open source basemap-friendly) | Hierarchical drill-down. |
+| Superset embed | `@superset-ui/embedded-sdk` | Official. |
+| Fonts | **Roboto** + **Roboto Slab** | Per OpenG2P branding. |
+| Container | Docker (multi-stage) | Same shape as `audit-manager/Dockerfile`. |
+| Orchestration | Kubernetes + Helm | OpenG2P helm conventions. |
+| Helm common chart | `common@2.30.0` from `https://openg2p.github.io/openg2p-helm` | As used by audit-manager. |
+| DB bootstrap | `postgres-init@1.1.0` from the same repo | Same pattern. |
+| Service mesh | Istio VirtualService | Same pattern as audit-manager. |
+| Observability | OpenTelemetry → existing OpenG2P stack | Wired post-MVP. |
+
+---
+
+## 5. Schema catalog — generation and structure
+
+### Approach
+
+The schema catalog is the single source of truth that makes G2P Insight country-agnostic and registry-agnostic. The platform itself knows nothing about specific tables, columns, or PII semantics until the catalog is loaded.
+
+**Generation:**
+
+1. As a **first step**, the catalog is **generated by a script** that inspects the SQLAlchemy models of the target registry extension (e.g. `farmer-registry/farmer-extension/src/openg2p_registry_farmer_extension/register_domain/models/*.py`).
+2. The generator emits a draft `schema.yaml` listing every table, column, type, nullability, foreign keys, and a best-effort PII classification based on column-name heuristics (`name`, `phone`, `email`, etc.).
+3. After generation, the operator **manually edits** the YAML to:
+   - Adjust PII classifications (`safe`, `quasi`, `pii`)
+   - Add column descriptions (used by the LLM for query understanding)
+   - Add units (e.g. `unit: ETB`, `unit: kg`)
+   - Mark columns as indexed
+   - Add row-count estimates and notes
+   - Add enum value lists where applicable
+4. Changes made directly in the database after generation are tracked manually — the operator re-runs the generator and merges, or edits the YAML by hand. The catalog file is versioned in Git per deployment.
+
+A future iteration may add database introspection (over `information_schema`) and a Catalog Admin UI; not in MVP.
+
+### Format
+
+```yaml
+# catalog/schema.yaml
+deployment:
+  country_code: ET
+  default_currency: ETB
+  k_anonymity: 5                              # per-deployment override of default
+  master_data_service_url: ${MDS_URL}
+
+tables:
+  - name: g2p_register_crops
+    schema: public
+    description: "Crop records per registered farmer"
+    row_count_estimate: 12000000
+    indexed: [internal_record_id, season]
+    pii_class_table: safe                     # majority class
+    columns:
+      - {name: internal_record_id, type: int,    pii: quasi, description: "Internal record id"}
+      - {name: commodity,          type: string, pii: safe,  description: "Crop commodity name"}
+      - {name: planted_date,       type: date,   pii: safe}
+      - {name: season,             type: string, pii: safe,  enum: [Belg, Meher]}
+      - {name: end_use,            type: enum,   pii: safe,  enum_source: CropEndUseEnum}
+
+  - name: mv_individuals_summary
+    schema: public
+    description: "Pre-joined individuals with demographics, latest income, geography"
+    row_count_estimate: 47000000
+    refresh: "nightly at 02:00 UTC"
+    indexed: [region_code, zone_code, woreda_code, gender, age_bracket]
+    columns:
+      - {name: id,              type: int,    pii: pii}
+      - {name: gender,          type: enum,   pii: safe,  enum: [M, F, O]}
+      - {name: age_bracket,     type: enum,   pii: quasi, enum: [0-5,6-17,18-35,36-55,55+]}
+      - {name: region_code,     type: string, pii: safe}
+      - {name: zone_code,       type: string, pii: safe}
+      - {name: woreda_code,     type: string, pii: safe}
+      - {name: pmt_score,       type: float,  pii: safe}
+      - {name: monthly_income,  type: float,  pii: safe, unit: ETB}
+
+pii_columns_in_source:
+  - {table: individuals, column: full_name}
+  - {table: individuals, column: phone}
+  - {table: individuals, column: fayda_id}
+
+safe_views:                                   # what the AI role can SELECT
+  - v_individuals_safe
+  - mv_individuals_summary
+  - mv_district_aggregates
+
+geo_columns:
+  - {column: region_code, level_mnemonic: region}
+  - {column: zone_code,   level_mnemonic: zone}
+  - {column: woreda_code, level_mnemonic: woreda}
+  - {column: kebele_code, level_mnemonic: kebele}
+```
+
+### Catalog mounting in Kubernetes
+
+The catalog files are mounted into the backend pod via a `ConfigMap` from `helm/g2p-insight/templates/configmap-catalog.yaml`, at `/app/catalog/`. The backend watches the directory and hot-reloads on changes.
+
+---
+
+## 6. Master Data Service integration
+
+OpenG2P Master Data Service exposes (per the supplied OpenAPI):
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /geo/get_g2p_geo_levels` | List geo levels (region, zone, woreda, kebele, …); each has `level_id`, `level_mnemonic`, optional `parent_level_id` |
+| `POST /geo/get_g2p_geo_level_values` | List values under a level; supports `parent_level_value_id` for drill-down |
+| `POST /partner/get_all_partners` | List partners (post-MVP) |
+| `POST /partner/get_partner` | Single partner (post-MVP) |
+
+### MasterDataService client
+
+The backend wraps these in `services/masterdata_service.py`:
+
+- All calls send a `G2PRequestHeader` (`sender_app_mnemonic="g2p-insight"`, `sender_app_url`, generated `request_id`, current UTC timestamp).
+- Responses are unwrapped through `response_header` / `response_body.response_payload`.
+- Geo levels are fetched once at startup and refreshed every 24 hours; values are fetched lazily per `level_id` (and per `parent_level_value_id` for drill-down).
+- Cache: in-memory TTL cache with optional persistent JSON snapshot.
+
+### Drill-down behavior
+
+The Expert Lab map and any geo-grouped chart:
+
+1. Loads the country's level hierarchy (one HTTP call, cached).
+2. Initial render groups by the top level (e.g. `region`).
+3. On click, fetches children using `parent_level_value_id = clicked_value_id` and re-aggregates the current SQL with a deeper `GROUP BY`.
+4. The `level_mnemonic` from MDS maps to the column name via the `geo_columns` section of the catalog.
+
+The level hierarchy is **not hardcoded** — multiple countries can be onboarded with different numbers of levels and different mnemonics.
+
+---
+
+## 7. Core data flows
+
+### Flow A — Natural-language ad-hoc query
+
+```
+Browser → POST /ask {question, session_id}
+  │
+  ├─ PiiService.sanitize(question)            (local, never network)
+  │   • Presidio + spaCy NER
+  │   • Replaces names/IDs/phones with [PERSON_1], [ID_1], …
+  │   • Stores reverse map locally per session
+  │
+  ├─ SchemaService.retrieve_relevant(question)
+  │   • Local embedding model
+  │   • pgvector lookup against indexed table/column descriptions
+  │   • FK-graph walk for join candidates
+  │
+  ├─ LlmService.plan(sanitized_question, schemas)
+  │   • Claude tool-use loop with tools:
+  │       - get_schema(table)
+  │       - get_exchange_rate(from, to)
+  │       - get_geo_levels(country)
+  │       - propose_intent(intent_json)
+  │   • Returns intent JSON: filters, group_by, viz, assumptions
+  │
+  ├─ SqlPlannerService.build(intent_json)
+  │   • Validates that all referenced columns are in catalog & safe
+  │   • Produces parameterized SQL targeting v_/mv_ views only
+  │   • Re-injects PII placeholders (e.g. [PERSON_1] → 'John Mayer')
+  │
+  ├─ CostGateService.assess(sql)
+  │   • Static analysis: SELECT-only, join count, no SELECT *
+  │   • EXPLAIN (FORMAT JSON) without ANALYZE
+  │   • Classify GREEN / YELLOW / RED
+  │
+  ├─ if RED  → respond with reason + suggested reformulation
+  │  if YELLOW → return preview metadata; UI asks user to confirm
+  │  if GREEN → continue
+  │
+  ├─ QueryExecutorService.run(sql)
+  │   • Read-only role, statement_timeout=30s
+  │
+  ├─ KAnonymityFilter.apply(rows, group_by, k)
+  │   • Suppress / generalize groups with size < k
+  │
+  ├─ AuditService.record(user, question, sql, cost, rows)
+  │
+  └─ → {rows, viz_spec, assumptions, pii_redactions, cost}
+```
+
+### Flow B — NL-driven Superset chart authoring
+
+```
+Admin → POST /dashboards/charts {question, dashboard_id}
+
+PII → Schema → LLM (same as A, plus prompt instructs Claude to also emit
+Superset form_data JSON for the chart)
+  │
+  ├─ Backend renders preview via internal execution path  (point 10 in design)
+  │
+  ├─ Admin approves → SupersetService:
+  │     • POST /api/v1/chart      (slice with form_data + dataset)
+  │     • POST /api/v1/dashboard/{id} (attach chart)
+  │
+  └─ Frontend deep-links into embedded Superset view
+```
+
+### Flow C — Expert analytics
+
+```
+Browser → POST /analytics/{function} {filters, params}
+  │
+  ├─ AnalyticsService.dispatch(function_name)
+  │   • Looks up ANALYSIS_REGISTRY[function_name]
+  │   • The LLM is NOT used to execute Python; it only suggests which
+  │     function to call (or admin picks one directly)
+  │
+  ├─ Function emits an extraction SQL → CostGate → execute → DataFrame
+  │
+  ├─ Function runs pandas/scipy/numpy on the DataFrame
+  │
+  └─ Returns {result_data, viz_spec, assumptions}
+```
+
+The analytics layer is generic. PMT-score-distribution is one **example** registered function (`analysis_functions/distribution.py`) — the platform does not bake in PMT semantics; the function is parameterized over column name, bin count, fit family.
+
+---
+
+## 8. PII protection
+
+PII protection is **layered**, not a single check.
+
+### Layer 1 — Local query sanitization
+Before any cloud LLM call, `pii_service.py`:
+- Runs Presidio with spaCy NER + country-specific recognizers loaded from `catalog/pii_recognizers.yaml`.
+- Replaces detected entities with stable placeholders (`[PERSON_1]`, `[ID_1]`).
+- Saves the reverse map in the chat session for re-injection at SQL build time.
+- Country-specific recognizers cover identifiers like Fayda token (ET), Aadhaar (IN), national ID formats, phone-number patterns, etc.
+
+### Layer 2 — Schema-level redaction
+The schema list sent to the LLM **excludes** any column tagged `pii: pii`. The LLM literally never sees that those columns exist.
+
+### Layer 3 — Database role isolation
+The `insight_ai` Postgres role:
+- `SELECT` only on PII-stripped views (`v_*_safe`) and materialized views (`mv_*`).
+- No access to the raw registry tables.
+- `statement_timeout`, `lock_timeout`, `idle_in_transaction_session_timeout` set.
+
+### Layer 4 — SQL validator
+`utils/sql_safety.py` parses the LLM-produced SQL and rejects:
+- Any non-`SELECT` (no `INSERT`/`UPDATE`/`DELETE`/`DROP`/`COPY`/`CREATE`).
+- Any reference to a non-allow-listed table or column.
+- Any `SELECT *`.
+- Any cross join.
+
+### Layer 5 — k-anonymity on results
+See §10.
+
+### What may leave the cluster
+
+| Goes to Claude | Stays local |
+|----------------|-------------|
+| Sanitized question text (no PII) | Raw question text |
+| Table & column names and descriptions (safe & quasi only) | PII column names, all PII values |
+| Row count estimates and indexes | Result rows |
+| Suggested intent JSON returned by Claude | Final SQL execution and results |
+| Generic enums (e.g. gender values) | Names, phones, IDs, addresses |
+
+---
+
+## 9. Cost gate and query safety
+
+Before any query touches the database, `cost_gate_service.py` runs:
+
+1. **Static analysis** (instant)
+   - SELECT-only? Else reject.
+   - Join count ≤ 5? Else warn.
+   - Has WHERE on a large table without an indexed column? Warn.
+   - Mentions only allow-listed tables? Else reject.
+
+2. **Planner estimate** (~ms)
+   - `EXPLAIN (FORMAT JSON) <sql>` — no execution, just the planner's estimate.
+   - Extract `Plan Rows` and `Total Cost`.
+
+3. **Classification**
+   - `GREEN` — auto-execute.
+   - `YELLOW` — return the cost report to the UI; user clicks **Run anyway** or **Use suggested faster query**.
+   - `RED` — refuse; explain why; offer to reformulate.
+
+4. **Suggested optimization**
+   - If a matching materialized view exists in the catalog, suggest using it (`mv_district_aggregates` typically 10⁴× faster).
+
+5. **Hard safety net**
+   - Postgres role-level `statement_timeout = 30s` (analytics) / `120s` (expert).
+
+The thresholds for GREEN/YELLOW/RED are configurable per deployment in `appConfig.costGate`.
+
+---
+
+## 10. k-anonymity and result safety
+
+After execution, before returning to the UI:
+
+- For grouped queries, any group with `count < k` (default `k = 5`, configurable per deployment in `catalog/schema.yaml` → `deployment.k_anonymity`) is **suppressed** or **generalized**: the row is returned with the bucket value redacted and the count shown as `< k`.
+- Single-row "identify an individual" results are rejected at the validator layer (the SQL must contain an aggregation or have a `LIMIT` with explicit user opt-in for raw rows, gated by role).
+- Per-role k-thresholds are deferred to v2; MVP uses one k per deployment.
+
+---
+
+## 11. Roles and access
+
+| Role | Dashboards | Ask | Expert Lab | Admin |
+|------|-----------|-----|------------|-------|
+| `insight.viewer` | View | — | — | — |
+| `insight.analyst` | View + filter | aggregates only | — | — |
+| `insight.expert` | View + filter | full | full | — |
+| `insight.admin` | Author + view | full | full | catalog, audit |
+
+Keycloak integration is **post-MVP**. For the MVP, the backend accepts a static admin bearer token (set via secret) and the frontend ships with no login screen. The middleware is structured so that swapping in `openg2p-fastapi-auth` is a localized change.
+
+---
+
+## 12. Frontend — UI and branding
+
+### Branding (from `/repos/branding/guidelines.txt`)
+
+| Color | Hex | Usage |
+|-------|-----|-------|
+| Yellow | `#F5BB1A` | Generous — primary accents, CTAs |
+| Black (deep navy) | `#061327` | Generous — title bar, headings |
+| White | `#FFFFFF` | Generous |
+| Orange | `#F07B1A` | Medium — highlights, warnings |
+| Magenta | `#88498F` | Sparingly |
+| Grey | `#C4C4C4` | As needed |
+| Light grey | `#F6F6F6` | Backgrounds |
+| Blue | `#2A477A` | Rarely |
+
+Fonts: **Roboto** (body) and **Roboto Slab** (display).
+
+### Title bar
+
+- Background `#061327` (almost-black), full width.
+- Logo: `G2P INSIGHT dark.png` / `.svg` from `/repos/branding/logos/g2p-insight/DARK/`, copied into `frontend/public/logos/` at build time.
+- Right side: user/role badge (a placeholder pre-Keycloak), language switcher (English only in MVP), help icon.
+
+### Layout
+
+- Left sidebar: top-level navigation (Dashboards, Ask, Expert Lab, Catalog, Audit).
+- Main pane: route-dependent.
+- All chart components consume a uniform `viz_spec` shape so backend-rendered previews and live charts share the same renderer.
+
+### i18n
+
+`i18n/` is scaffolded with English-only message catalogs in MVP. Adding a locale = drop in a JSON; no code changes.
+
+---
+
+## 13. Deployment — Docker, Helm, Kubernetes
+
+The deployment shape mirrors `openg2p-audit-manager`.
+
+### Docker images
+
+Two images:
+
+| Image | Base | Port |
+|-------|------|------|
+| `openg2p/g2p-insight-backend` | `python:3.13-slim` (multi-stage) | 8000 |
+| `openg2p/g2p-insight-frontend` | `node:20-alpine` build → `nginx:alpine` runtime | 8080 |
+
+Both produced by multi-stage Dockerfiles in `backend/Dockerfile` and `frontend/Dockerfile`. Build args `GIT_COMMIT` and `BUILD_TIME` are baked in for observability, same pattern as audit-manager.
+
+### Helm chart
+
+`helm/g2p-insight/Chart.yaml` follows OpenG2P conventions:
+
+```yaml
+apiVersion: v2
+name: g2p-insight
+description: "OpenG2P Insight — AI-driven analytics platform"
+type: application
+version: 0.0.0-develop
+dependencies:
+  - name: common
+    repository: https://openg2p.github.io/openg2p-helm
+    version: 2.30.0
+  - name: postgres-init
+    version: 1.1.0
+    repository: https://openg2p.github.io/openg2p-helm
+    condition: postgres-init.enabled
+icon: https://openg2p.github.io/openg2p-helm/openg2p-logo.png
+keywords: [openg2p, g2p-insight, analytics, ai]
+maintainers:
+  - {email: info@openg2p.org, name: OpenG2P}
+annotations:
+  catalog.cattle.io/display-name: "OpenG2P G2P Insight"
+  openg2p.org/add-to-rancher: ""
+```
+
+### Pattern reuse
+
+| From audit-manager | Reused in g2p-insight |
+|---|---|
+| `global.*` block (DB host, DB name, secrets) | yes |
+| `postgres-init` subchart to create DB + user | yes |
+| `istio.virtualservice` for path-based routing | yes (`/v1/insight/`) |
+| ConfigMap-mounted YAML config at `/app/config/config.yaml` | yes |
+| `envVars` / `envVarsFrom` (DB password from secret) | yes |
+| Startup/liveness/readiness probes on `/health` | yes |
+| `postgresCheckerInit` init container | yes |
+| Build args `GIT_COMMIT`, `BUILD_TIME` | yes |
+| `questions.yaml` for Rancher | yes |
+
+### Additional resources in `templates/`
+
+- `configmap-catalog.yaml` — mounts `catalog/*.yaml` into `/app/catalog/`. Operators override via `values.yaml` (`appCatalog.schemaYaml: |- …`).
+- `secret-llm.yaml` — `ANTHROPIC_API_KEY`. Per-deployment, provided via Helm `--set` or external secret. Never committed.
+- `secret-superset.yaml` — Superset API user credentials for chart authoring.
+
+### Default ingress / routing
+
+- Backend: `insight.<env>.openg2p.org/v1/insight/` via Istio VirtualService.
+- Frontend: `insight.<env>.openg2p.org/` → frontend Service.
+- Superset is **not** under our chart — we point at the existing deployment via `global.supersetUrl` (e.g. `superset.qa2.openg2p.org`).
+
+---
+
+## 14. Configuration
+
+Per-deployment settings live in `values.yaml`. Highlights:
+
+```yaml
+global:
+  insightHostname: insight.qa2.openg2p.org
+  postgresqlHost: commons-postgresql
+
+  insightDB: '{{ printf "%s" .Release.Name | replace "-" "_" }}'
+  insightDBUser: '{{ printf "%s_user" .Release.Name | replace "-" "_" }}'
+  insightDBSecret: '{{ .Release.Name }}'
+
+  # External services — all overridable per deployment
+  supersetUrl: https://superset.qa2.openg2p.org
+  masterDataServiceUrl: https://masterdata.qa2.openg2p.org
+  registryDBHost: commons-postgresql        # the registry data DB (read-only access)
+  registryDBName: farmer_registry           # what we read from
+
+  # LLM
+  anthropicApiKeySecret: g2p-insight-llm
+  anthropicApiKeyKey: anthropic-api-key
+  llmModel: claude-opus-4-7                 # current Claude model id
+
+insightBackend:
+  enabled: true
+  replicaCount: 2
+  appConfig:
+    serviceId: openg2p.insight
+    apiVersion: "1.0"
+    catalogPath: /app/catalog
+    pii:
+      spacyModel: en_core_web_lg
+    costGate:
+      green:  {rows: 10000,    cost: 1000}
+      yellow: {rows: 1000000,  cost: 100000}
+    kAnonymity:
+      defaultK: 5
+    superset:
+      url: '{{ tpl .Values.global.supersetUrl $ }}'
+      username: insight-service-account
+      passwordSecret: g2p-insight-superset
+    masterData:
+      url: '{{ tpl .Values.global.masterDataServiceUrl $ }}'
+      senderAppMnemonic: g2p-insight
+
+insightFrontend:
+  enabled: true
+  replicaCount: 2
+  env:
+    VITE_API_BASE_URL: https://insight.qa2.openg2p.org/v1/insight
+    VITE_SUPERSET_URL: '{{ tpl .Values.global.supersetUrl $ }}'
+```
+
+---
+
+## 15. Audit and observability
+
+- Every NL query, generated SQL, cost class, row count, latency, user, role is written to `insight.audit_log` and exported via structured logs.
+- LLM token usage is recorded per user.
+- OpenTelemetry traces span PII → schema → LLM → planner → cost → exec → response.
+- A built-in observability dashboard (created via the platform itself) shows queries/day, rejection reasons, slowest queries, top users.
+- Post-MVP: emit CloudEvents to `openg2p-audit-manager` matching its existing schema.
+
+---
+
+## 16. Roadmap
+
+In priority order after the MVP lands:
+
+1. Keycloak integration (`openg2p-fastapi-auth`) and per-role authorization.
+2. `openg2p-audit-manager` integration via CloudEvents on Kafka.
+3. Catalog Admin UI (in-app YAML edit with validation + preview).
+4. Additional registered analysis functions (correlation matrix, UpSet overlap, cross-tabs, regression).
+5. Cube.dev semantic layer with pre-aggregations (consistency + speed).
+6. Air-gapped LLM (Qwen 2.5 / Llama 3.1 via vLLM, tool-use compatible).
+7. OpenSearch as an optional fast analytical backend.
+8. Differential privacy noise injection for high-sensitivity aggregates.
+9. Multi-turn conversation memory in Ask.
+10. Scheduled reports (PDF/XLSX) and watermarked exports.
+11. Full i18n with locale switching.
+
+---
+
+## 17. Open items
+
+These do not block scaffolding but should be resolved before the corresponding feature is built.
+
+| # | Item | Blocks |
+|---|------|--------|
+| 1 | Confirm the registry source(s) we target first (farmer-registry only? others?) — affects which models the catalog generator parses initially. | Catalog generator. |
+| 2 | Anthropic API key custody pattern in OpenG2P — per-deployment Kubernetes secret confirmed; agree on naming. | Helm secret. |
+| 3 | Superset service account — does an `insight-service-account` already exist on `superset.qa2.openg2p.org` with chart-write permission, or do we provision one? | NL chart authoring (Flow B). |
+| 4 | Country-specific PII recognizer patterns for the first deployment (e.g. Fayda token regex). | PII service first run. |
+| 5 | Choice of basemap tile source for `deck.gl + MapLibre GL` (OpenStreetMap raster, MapTiler key, or self-hosted tiles). | Drill-down map. |
+| 6 | Existing OpenG2P observability stack endpoints (OTLP collector) for wiring telemetry. | Observability wiring. |
+| 7 | Approval flow for YELLOW queries — auto-approve for `insight.expert` and prompt only for `insight.analyst`, or always prompt? | Cost gate UX. |
+| 8 | License files and copyright headers — MPL 2.0 as per OpenG2P; confirm. | LICENSE / headers. |
+
+---
+
+## License
+
+Mozilla Public License 2.0 — same as the rest of OpenG2P.
