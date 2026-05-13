@@ -137,6 +137,37 @@ export async function runAnalysis(fn: string, body: unknown) {
   };
 }
 
+// ---------------- Dashboard chart authoring ----------------------------------
+
+export interface ChartPreviewResponse {
+  status: "preview" | "saved" | "error" | string;
+  chart_id?: number | null;
+  cost?: Cost | null;
+  form_data?: Record<string, unknown> | null;
+  viz_spec?: VizSpec | null;
+  preview_rows: Record<string, unknown>[];
+  assumptions: string[];
+  sql?: string | null;
+}
+
+export async function previewChart(question: string, dashboard_id?: number) {
+  const { data } = await api.post<ChartPreviewResponse>("/dashboards/charts/preview", {
+    question,
+    ...(dashboard_id !== undefined ? { dashboard_id } : {}),
+  });
+  return data;
+}
+
+export async function saveChart(payload: {
+  name: string;
+  dataset: string;
+  form_data: Record<string, unknown>;
+  dashboard_id?: number;
+}) {
+  const { data } = await api.post<ChartPreviewResponse>("/dashboards/charts/save", payload);
+  return data;
+}
+
 export async function getCatalog() {
   const { data } = await api.get("/catalog");
   return data as Record<string, unknown>;

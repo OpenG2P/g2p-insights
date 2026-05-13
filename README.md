@@ -481,20 +481,48 @@ presents them as buttons; the user can also type a free-text answer when
 
 ### Flow B — NL-driven Superset chart authoring
 
-```
-Admin → POST /dashboards/charts {question, dashboard_id}
+Two endpoints, three frontend actions:
 
-PII → Schema → LLM (same as A, plus prompt instructs Claude to also emit
-Superset form_data JSON for the chart)
-  │
-  ├─ Backend renders preview via internal execution path  (point 10 in design)
-  │
-  ├─ Admin approves → SupersetService:
-  │     • POST /api/v1/chart      (slice with form_data + dataset)
-  │     • POST /api/v1/dashboard/{id} (attach chart)
-  │
-  └─ Frontend deep-links into embedded Superset view
 ```
+Step 1 ── Browser → POST /dashboards/charts/preview {question}
+  │
+  ├─ PII → Schema → LLM (returns a chart-oriented Intent: group_by, metric, viz)
+  ├─ SqlPlanner.build()  → safe SQL
+  ├─ CostGate.assess()   → GREEN/YELLOW/RED report
+  ├─ QueryExecutor.run(preview=True)  → first N rows for the preview table
+  ├─ SupersetService.build_form_data(intent) → Superset-shaped form_data dict
+  │
+  └─ → { status: "preview", cost, form_data, viz_spec, preview_rows,
+         assumptions, sql }
+
+Step 2 ── Frontend displays preview (cost banner, SQL panel, suggested
+          viz type, preview rows, assumptions). User can click Refine
+          (restart) or Save.
+
+Step 3 ── Browser → POST /dashboards/charts/save {name, dataset, form_data}
+  │
+  ├─ SupersetService.create_chart():
+  │     • Resolves dataset_id from the table_name via /api/v1/dataset
+  │     • POST /api/v1/chart with:
+  │         slice_name, viz_type, datasource_id, datasource_type="table"
+  │         params = JSON.dumps(form_data)        ← Superset wants a STRING here
+  │     • Returns the chart_id
+  │
+  ├─ optional: attach to a dashboard_id
+  │
+  └─ → { status: "saved", chart_id }
+```
+
+**Preview is non-destructive.** Nothing is created in Superset until the user
+explicitly clicks Save. The preview runs through the same cost gate as `/ask`,
+so an expensive chart query gets flagged before any data leaves Postgres.
+
+**Frontend (Dashboards page).** Empty by default with a single CTA
+"**Add chart from natural language**". Clicking it shows a question textarea
++ optional chart name, then a Preview button. The preview view shows cost,
+collapsible SQL, suggested viz type, first preview rows, and assumptions —
+followed by **Save to Superset** and **Refine question**. After save, an
+alert links straight to the chart in Superset (`/explore/?slice_id=<id>`).
 
 ### Flow C — Expert analytics
 

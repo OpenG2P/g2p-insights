@@ -36,9 +36,9 @@ class DashboardController(BaseController):
             sanitized = self._pii.sanitize(req.question)
             schemas = await self._schema.retrieve_relevant(sanitized.text)
             intent = await self._llm.plan_chart(sanitized.text, schemas)
-            sql = self._planner.build(intent, sanitized.placeholder_map)
-            cost = await self._cost.assess(sql)
-            preview_rows = await self._exec.run(sql, group_by=intent.group_by, preview=True)
+            planned = self._planner.build(intent, sanitized.placeholder_map)
+            cost = await self._cost.assess(planned)
+            preview_rows = await self._exec.run(planned, group_by=intent.group_by, preview=True)
             form_data = self._superset.build_form_data(intent)
             return AuthorChartResponse(
                 status="preview",
@@ -47,7 +47,7 @@ class DashboardController(BaseController):
                 viz_spec=intent.viz,
                 preview_rows=preview_rows.rows,
                 assumptions=intent.assumptions,
-                sql=sql,
+                sql=str(planned),
             )
 
         @self.router.post("/dashboards/charts/save", response_model=AuthorChartResponse)
