@@ -27,7 +27,7 @@ tables:
       - {name: primary_livelihood,     type: enum,   pii: safe,  enum: [CROP_FARMING, LIVESTOCK, PASTORALIST, MIXED, WAGE_LABOR, BUSINESS, OTHER]}
       - {name: employment_status,      type: enum,   pii: safe,  enum: [EMPLOYED, SELF_EMPLOYED, UNEMPLOYED, STUDENT, OTHER]}
       - {name: coping_strategies_index, type: int,   pii: safe,  description: "CSI score; higher = worse"}
-      - {name: disability_status,      type: enum,   pii: quasi, enum: [YES, NO, UNKNOWN]}
+      - {name: disability_status,      type: enum,   pii: quasi, enum: ["YES", "NO", "UNKNOWN"]}
       - {name: displacement_status,    type: enum,   pii: quasi, enum: [IDP, RETURNEE, REFUGEE, HOST_COMMUNITY]}
       - {name: pastoralist_classification, type: enum, pii: safe, enum: [PASTORALIST, SEMI_PASTORALIST, SETTLED]}
       - {name: plw_status,             type: bool,   pii: quasi, description: "Pregnant or lactating"}

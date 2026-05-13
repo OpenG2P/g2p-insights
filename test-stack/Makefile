@@ -13,7 +13,9 @@
 # =============================================================================
 
 SHELL := /bin/bash
-COMPOSE := docker compose --env-file .env
+# Use `docker compose` (plugin) if available, else fall back to legacy `docker-compose`.
+COMPOSE_BIN := $(shell docker compose version >/dev/null 2>&1 && echo "docker compose" || echo "docker-compose")
+COMPOSE := $(COMPOSE_BIN) --env-file .env
 
 MASTERDATA_URL ?= https://master-data.trial.openg2p.org
 REGISTRY_DB_URL ?= postgresql://postgres:postgres@localhost:5433/registry

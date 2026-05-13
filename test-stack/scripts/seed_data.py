@@ -236,6 +236,9 @@ def main() -> int:
                     (hh_id,),
                 )
                 size, region, zone, woreda, kebele, hh_pmt, hh_income = cur.fetchone()
+                # NUMERIC columns come back as Decimal; cast for arithmetic with floats.
+                hh_pmt = float(hh_pmt) if hh_pmt is not None else 35.0
+                hh_income = float(hh_income) if hh_income is not None else 2500.0
                 for member_idx in range(size):
                     is_head = member_idx == 0
                     age, bracket = pick_age()
@@ -297,8 +300,8 @@ def main() -> int:
                         displacement_status, pastoralist_classification, high_mobility_indicator,
                         plw_status, monthly_income, pmt_score, fayda_token, fayda_verified,
                         verification_method, created_at)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-                               %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                               %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                     chunk,
                 )
             print(f"[seed] inserted {len(ind_rows)} individuals")

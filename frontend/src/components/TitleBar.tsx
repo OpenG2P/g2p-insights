@@ -1,10 +1,15 @@
-import { Layout, Space, Typography } from "antd";
+import { Avatar, Layout, Space, Typography } from "antd";
+import { UserOutlined } from "@ant-design/icons";
 import { palette } from "../theme";
+import { useUser } from "../auth";
 
 const { Header } = Layout;
 const { Text } = Typography;
 
 export default function TitleBar() {
+  const user = useUser();
+  const displayName = user.name && user.name !== "anonymous" ? user.name : "User";
+
   return (
     <Header
       style={{
@@ -21,9 +26,10 @@ export default function TitleBar() {
         style={{ height: 36, marginRight: 16 }}
       />
       <div style={{ flex: 1 }} />
-      <Space size="middle">
-        <Text style={{ color: palette.white, fontFamily: '"Roboto Slab", serif' }}>
-          OpenG2P Insight
+      <Space size="small" align="center">
+        <Avatar size="small" icon={<UserOutlined />} style={{ background: palette.yellow, color: palette.black }} />
+        <Text style={{ color: palette.white, fontFamily: '"Roboto", sans-serif' }}>
+          {displayName}
         </Text>
       </Space>
     </Header>

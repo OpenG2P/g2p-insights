@@ -48,9 +48,19 @@ RUN groupadd --gid 1000 appuser && \
 WORKDIR /app
 
 COPY --from=builder /build/dist/*.whl /tmp/
-RUN pip install --no-cache-dir /tmp/*.whl && \
-    python -m spacy download en_core_web_lg && \
-    rm -f /tmp/*.whl
+# Install the wheel only. The spaCy `en_core_web_lg` model (~580 MB) is NOT
+# baked into the image — the download from the spaCy CDN is too slow on many
+# networks. Instead, the runtime has two paths:
+#   1. If the model is already present (mounted from a host cache, or pulled
+#      in a long-lived container via `python -m spacy download en_core_web_lg`),
+#      Presidio is wired up and full NER works.
+#   2. If the model is missing, the PiiService logs a warning and falls back
+#      to a regex-only PII path. The pipeline still runs; PII detection is
+#      best-effort until the model is provided.
+# Operators wanting the full NER path should either:
+#   docker exec insight-test-backend python -m spacy download en_core_web_lg
+# or mount a pre-downloaded model directory at the spaCy data location.
+RUN pip install --no-cache-dir /tmp/*.whl && rm -f /tmp/*.whl
 
 COPY --chown=appuser:appuser config/      /app/config/
 COPY --chown=appuser:appuser catalog/     /app/catalog/

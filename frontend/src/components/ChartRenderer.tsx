@@ -15,8 +15,8 @@ export default function ChartRenderer({ vizSpec, data }: Props) {
       <Plot
         data={[{ x: xs, y: h.counts, type: "bar" }]}
         layout={{
-          xaxis: { title: (vizSpec.x_label as string) || "value" },
-          yaxis: { title: (vizSpec.y_label as string) || "frequency" },
+          xaxis: { title: { text: (vizSpec.x_label as string) || "value" } },
+          yaxis: { title: { text: (vizSpec.y_label as string) || "frequency" } },
           margin: { t: 24 },
           autosize: true,
         }}

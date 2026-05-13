@@ -130,10 +130,13 @@ class LlmService(BaseService):
 
         messages = self._build_messages(sanitized_question, tables, history or [])
 
+        # NOTE: `temperature` is deprecated for Opus 4.7 (and likely future
+        # Claude 4.x models). Don't send it unconditionally. If you need a
+        # specific temperature, set it via INSIGHT_LLM__TEMPERATURE and we'll
+        # forward it on supported models — for now we just don't pass it.
         response = await self._client.messages.create(
             model=_config.llm.model,
             max_tokens=_config.llm.max_tokens,
-            temperature=_config.llm.temperature,
             system=NL_TO_INTENT_SYSTEM,
             tools=[INTENT_TOOL_SCHEMA, CLARIFY_TOOL_SCHEMA],
             messages=messages,
@@ -199,10 +202,28 @@ class LlmService(BaseService):
 
     @staticmethod
     def _schema_blob(tables: List[TableSpec]) -> str:
+        """Render the schema for the LLM prompt.
+
+        IMPORTANT: include enum values inline. Without them the model
+        hallucinates filter values (e.g. emitting `gender = 'FEMALE'` when the
+        underlying Postgres enum only accepts 'M'/'F'/'O'), which then fails
+        at EXPLAIN time. Units and descriptions are included where present —
+        all of these meaningfully reduce wrong-SQL rates.
+        """
         rows = []
         for t in tables:
-            cols = ", ".join(f"{c.name}:{c.type}" for c in t.safe_columns())
-            rows.append(f"- {t.name}  ({cols})  -- {t.description or ''}")
+            cols: list[str] = []
+            for c in t.safe_columns():
+                bits = [f"{c.name}:{c.type}"]
+                if c.enum:
+                    bits.append(f"enum={{{','.join(c.enum)}}}")
+                if c.unit:
+                    bits.append(f"unit={c.unit}")
+                cols.append(" ".join(bits))
+            line = f"- {t.name} ({'; '.join(cols)})"
+            if t.description:
+                line += f"  -- {t.description}"
+            rows.append(line)
         return "\n".join(rows)
 
     @staticmethod

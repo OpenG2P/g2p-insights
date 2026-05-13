@@ -17,7 +17,7 @@ from typing import List, Optional
 
 import yaml
 from openg2p_fastapi_common.service import BaseService
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ..config import Settings
 
@@ -32,6 +32,22 @@ class ColumnSpec(BaseModel):
     description: Optional[str] = None
     unit: Optional[str] = None
     enum: Optional[List[str]] = None
+
+    @field_validator("enum", mode="before")
+    @classmethod
+    def _coerce_enum_to_strings(cls, v):
+        """YAML 1.1 (PyYAML's default) parses bare YES/NO/ON/OFF/True/False as
+        booleans. Coerce every enum value to its string form so catalog
+        authors don't get bitten by quoting subtleties."""
+        if v is None:
+            return v
+        out: List[str] = []
+        for item in v:
+            if isinstance(item, bool):
+                out.append("YES" if item else "NO")
+            else:
+                out.append(str(item))
+        return out
 
 
 class TableSpec(BaseModel):

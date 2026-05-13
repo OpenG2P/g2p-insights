@@ -4,6 +4,12 @@ OpenG2P Insight backend — FastAPI app.
 Uses openg2p-fastapi-common's Initializer pattern. Services and controllers
 register themselves via BaseComponent on construction; we just instantiate
 them in the right order.
+
+Env vars: openg2p-fastapi-common's registry stores ONE Settings instance per
+subclass, looked up by isinstance. We don't need to pre-register anything —
+each call to `<Subclass>.get_config(strict=False)` lazily appends its own
+instance. CommonSettings env vars use the `COMMON_` prefix; ours use
+`INSIGHT_` (with `__` for nested fields, e.g. INSIGHT_MASTERDATA__URL).
 """
 
 from __future__ import annotations

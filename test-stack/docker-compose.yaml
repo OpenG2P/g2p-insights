@@ -74,12 +74,20 @@ services:
       CONFIG_PATH: /app/config/config.yaml
       CATALOG_PATH: /app/catalog
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      INSIGHT__LLM__MODEL: ${INSIGHT__LLM__MODEL:-claude-opus-4-7}
-      INSIGHT__SUPERSET__URL: http://superset:8088
-      INSIGHT__SUPERSET__USERNAME: ${SUPERSET_ADMIN_USERNAME:-admin}
-      INSIGHT__SUPERSET__PASSWORD: ${SUPERSET_ADMIN_PASSWORD:-admin}
-      INSIGHT__MASTERDATA__URL: ${MASTERDATA_URL:-https://master-data.trial.openg2p.org}
-      INSIGHT__MASTERDATA__SENDER_APP_MNEMONIC: g2p-insight
+      INSIGHT_LLM__MODEL: ${INSIGHT_LLM__MODEL:-claude-opus-4-7}
+      INSIGHT_SUPERSET__URL: http://superset:8088
+      INSIGHT_SUPERSET__USERNAME: ${SUPERSET_ADMIN_USERNAME:-admin}
+      INSIGHT_SUPERSET__PASSWORD: ${SUPERSET_ADMIN_PASSWORD:-admin}
+      INSIGHT_MASTERDATA__URL: ${MASTERDATA_URL:-https://master-data.trial.openg2p.org}
+      INSIGHT_MASTERDATA__SENDER_APP_MNEMONIC: g2p-insight
+      # openg2p-fastapi-common reads its OWN Settings (env_prefix=common_) when
+      # applying the router prefix and DB datasource. Set those here.
+      COMMON_OPENAPI_COMMON_API_PREFIX: /v1/insight
+      # Backend connects to the registry DB so its read-only queries can see
+      # `mv_individuals_summary` etc. The insight app's own tables
+      # (audit_log, chat_session, saved_chart) live in the `insight` schema
+      # in the SAME database — created by alembic.
+      COMMON_DB_DATASOURCE: postgresql+asyncpg://postgres:postgres@postgres:5432/registry
     volumes:
       - ../backend/config:/app/config:ro
       - ./postgres/catalog:/app/catalog:ro
