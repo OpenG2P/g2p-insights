@@ -1,0 +1,58 @@
+# Example deployment catalog. See README §5 for the full format.
+# In Kubernetes this file is replaced/overridden by the umbrella chart's
+# ConfigMap (templates/configmap-catalog.yaml).
+
+deployment:
+  country_code: ET
+  default_currency: ETB
+  k_anonymity: 5
+  master_data_service_url: ${INSIGHT__MASTERDATA__URL}
+
+tables:
+  - name: mv_individuals_summary
+    schema: public
+    description: "Pre-joined individuals with demographics, latest income, geography. Refreshed nightly."
+    row_count_estimate: 47000000
+    refresh: "nightly at 02:00 UTC"
+    indexed: [region_code, zone_code, woreda_code, gender, age_bracket]
+    columns:
+      - {name: id,              type: int,    pii: pii,   description: "Internal individual id"}
+      - {name: gender,          type: enum,   pii: safe,  enum: [M, F, O]}
+      - {name: age_bracket,     type: enum,   pii: quasi, enum: ["0-5","6-17","18-35","36-55","55+"]}
+      - {name: region_code,     type: string, pii: safe}
+      - {name: zone_code,       type: string, pii: safe}
+      - {name: woreda_code,     type: string, pii: safe}
+      - {name: kebele_code,     type: string, pii: safe}
+      - {name: pmt_score,       type: float,  pii: safe}
+      - {name: livelihood_type, type: enum,   pii: safe}
+      - {name: monthly_income,  type: float,  pii: safe,  unit: ETB}
+      - {name: disability_flag, type: bool,   pii: quasi}
+
+  - name: mv_district_aggregates
+    schema: public
+    description: "Pre-aggregated counts by region/zone/woreda × gender × age_bracket. Use first for any district-level query."
+    row_count_estimate: 720
+    refresh: "nightly at 02:30 UTC"
+    indexed: [region_code, zone_code, woreda_code]
+    columns:
+      - {name: region_code,  type: string, pii: safe}
+      - {name: zone_code,    type: string, pii: safe}
+      - {name: woreda_code,  type: string, pii: safe}
+      - {name: gender,       type: enum,   pii: safe}
+      - {name: age_bracket,  type: enum,   pii: quasi}
+      - {name: total,        type: int,    pii: safe}
+
+pii_columns_in_source:
+  - {table: individuals, column: full_name}
+  - {table: individuals, column: phone}
+  - {table: individuals, column: fayda_id}
+
+safe_views:
+  - mv_individuals_summary
+  - mv_district_aggregates
+
+geo_columns:
+  - {column: region_code, level_mnemonic: region}
+  - {column: zone_code,   level_mnemonic: zone}
+  - {column: woreda_code, level_mnemonic: woreda}
+  - {column: kebele_code, level_mnemonic: kebele}

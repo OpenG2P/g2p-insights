@@ -1,0 +1,14 @@
+{{- if .Values.insightBackend.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-insight-catalog
+  labels: {{ include "g2p-insight.labels" . | nindent 4 }}
+data:
+  schema.yaml: |
+{{ tpl .Values.insightBackend.appCatalog.schemaYaml . | indent 4 }}
+  pii_recognizers.yaml: |
+{{ tpl .Values.insightBackend.appCatalog.piiRecognizersYaml . | indent 4 }}
+  viz_templates.yaml: |
+{{ tpl .Values.insightBackend.appCatalog.vizTemplatesYaml . | indent 4 }}
+{{- end }}

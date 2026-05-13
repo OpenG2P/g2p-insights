@@ -1,0 +1,10 @@
+{{- if .Values.insightBackend.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-insight-backend-config
+  labels: {{ include "g2p-insight.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+{{ tpl (toYaml .Values.insightBackend.appConfig) . | indent 4 }}
+{{- end }}

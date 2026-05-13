@@ -1,0 +1,12 @@
+# Country-specific PII recognizers for Ethiopia.
+recognizers:
+  - entity: FAYDA_TOKEN
+    patterns:
+      - {name: fayda_12digits, regex: '\b\d{12}\b', score: 0.6}
+    context: [fayda, token, fan]
+
+  - entity: ETHIOPIAN_PHONE
+    patterns:
+      - {name: et_phone_local,   regex: '\b09\d{8}\b',  score: 0.7}
+      - {name: et_phone_intl,    regex: '\+2519\d{8}\b', score: 0.85}
+    context: [phone, mobile, telephone, contact]

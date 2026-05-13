@@ -1,0 +1,159 @@
+# ============================================================================
+# OpenG2P Insight — .gitignore
+# ============================================================================
+# Goal: every artefact that's generated, environment-specific, or sensitive
+# stays out of Git. Add new patterns here rather than committing tracked-but-
+# ignored files via `git add -f`.
+
+# ----------------------------------------------------------------------------
+# Python
+# ----------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.eggs/
+build/
+dist/
+wheels/
+pip-wheel-metadata/
+.installed.cfg
+MANIFEST
+
+# Virtualenvs
+.venv/
+venv/
+env/
+.python-version
+
+# Test + coverage outputs
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+junit.xml
+.hypothesis/
+
+# Type-checkers + linters
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+
+# Tooling caches
+.ipynb_checkpoints/
+.cache/
+
+# ----------------------------------------------------------------------------
+# Node / Vite / Frontend
+# ----------------------------------------------------------------------------
+node_modules/
+.pnp/
+.pnp.js
+frontend/dist/
+frontend/build/
+frontend/coverage/
+frontend/.vite/
+frontend/.turbo/
+frontend/.parcel-cache/
+*.tsbuildinfo
+.npm/
+.yarn/cache/
+.yarn/install-state.gz
+.pnpm-store/
+
+# Frontend runtime config (committed only as .env.example variants)
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local
+
+# ----------------------------------------------------------------------------
+# Environment files (NEVER commit real secrets)
+# ----------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+!.env.*.example
+.envrc
+
+# ----------------------------------------------------------------------------
+# Editor / IDE
+# ----------------------------------------------------------------------------
+.idea/
+.vscode/
+.fleet/
+.zed/
+.cursor/
+*.iml
+*.swp
+*.swo
+*~
+.#*
+
+# ----------------------------------------------------------------------------
+# OS
+# ----------------------------------------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+desktop.ini
+
+# ----------------------------------------------------------------------------
+# Logs / backups / lock files (per-machine)
+# ----------------------------------------------------------------------------
+*.log
+*.bak
+*.orig
+*.rej
+*.tmp
+
+# ----------------------------------------------------------------------------
+# Helm
+# ----------------------------------------------------------------------------
+*.tgz
+helm/g2p-insight/charts/*.tgz
+helm/**/Chart.lock.bak
+
+# ----------------------------------------------------------------------------
+# Docker / local-stack runtime data
+# ----------------------------------------------------------------------------
+# Anonymous bind-mounts or local dumps (named volumes live in Docker, not here)
+test-stack/postgres/cache/
+test-stack/postgres/data/
+test-stack/dumps/
+
+# Local per-deployment catalog overrides — only the *.example.yaml files
+# should be committed. The operator generates schema.yaml et al. locally.
+backend/catalog/schema.yaml
+backend/catalog/pii_recognizers.yaml
+backend/catalog/viz_templates.yaml
+
+# ----------------------------------------------------------------------------
+# Secrets (defense-in-depth — never commit even if you mean to)
+# ----------------------------------------------------------------------------
+*.pem
+*.key
+*.pfx
+*.p12
+*-secret.yaml
+secret-*.yaml
+*credentials*.json
+*credentials*.yaml
+service-account*.json
+
+# ----------------------------------------------------------------------------
+# Runtime caches
+# ----------------------------------------------------------------------------
+/tmp/insight-embeddings/
+.spacy_cache/
+
+# ----------------------------------------------------------------------------
+# Localization compiled files
+# ----------------------------------------------------------------------------
+*.mo

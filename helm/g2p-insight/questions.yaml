@@ -1,0 +1,28 @@
+questions:
+  - variable: global.insightHostname
+    label: "Insight hostname"
+    type: hostname
+    default: insight.example.openg2p.org
+    group: "General"
+  - variable: global.supersetUrl
+    label: "Superset URL"
+    description: "URL of the existing Superset deployment to use for dashboards"
+    type: string
+    default: https://superset.qa2.openg2p.org
+    group: "External services"
+  - variable: global.masterDataServiceUrl
+    label: "Master Data Service URL"
+    type: string
+    default: https://masterdata.qa2.openg2p.org
+    group: "External services"
+  - variable: global.llmModel
+    label: "LLM model id"
+    type: string
+    default: claude-opus-4-7
+    group: "LLM"
+  - variable: global.anthropicApiKeySecret
+    label: "Anthropic API Key — Secret name"
+    description: "Kubernetes Secret holding ANTHROPIC_API_KEY. Provide separately."
+    type: string
+    default: g2p-insight-llm
+    group: "LLM"

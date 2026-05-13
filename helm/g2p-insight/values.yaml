@@ -1,0 +1,211 @@
+global:
+  insightHostname: 'insight.qa2.openg2p.org'
+
+  # ------- insight DB (owns the insight schema) -------------------------------
+  postgresqlHost: commons-postgresql
+  insightDB: '{{ printf "%s" .Release.Name | replace "-" "_" }}'
+  insightDBPort: 5432
+  insightDBUser: '{{ printf "%s_user" .Release.Name | replace "-" "_" }}'
+  insightDBSecret: '{{ .Release.Name }}'
+  insightDBUserPasswordKey: '{{ .Release.Name }}-db-user'
+
+  # ------- registry DB (where the registry data lives; we read-only) ----------
+  registryDBHost: commons-postgresql
+  registryDBPort: 5432
+  registryDBName: registry           # override per deployment
+
+  # ------- external services --------------------------------------------------
+  supersetUrl: https://superset.qa2.openg2p.org
+  masterDataServiceUrl: https://masterdata.qa2.openg2p.org
+
+  # ------- LLM ----------------------------------------------------------------
+  # Secret holding ANTHROPIC_API_KEY — provided per deployment, NEVER committed.
+  anthropicApiKeySecret: g2p-insight-llm
+  anthropicApiKeyKey: anthropic-api-key
+  llmModel: claude-opus-4-7
+
+# ---------------------------------------------------------------------------
+# postgres-init: creates the insight DB + user. The registry DB already exists
+# and is NOT managed by this chart.
+# ---------------------------------------------------------------------------
+postgres-init:
+  enabled: true
+  postgresql:
+    host: '{{ tpl .Values.global.postgresqlHost $ }}'
+    port: 5432
+    existingSecret: commons-postgresql
+    existingSecretPostgresPasswordKey: postgres-password
+  databases:
+    - name: '{{ tpl .Values.global.insightDB $ }}'
+      user: '{{ tpl .Values.global.insightDBUser $ }}'
+      secret: '{{ tpl .Values.global.insightDBSecret $ }}'
+      secretUserPasswordKey: '{{ tpl .Values.global.insightDBUserPasswordKey $ }}'
+
+# ===========================================================================
+# Backend
+# ===========================================================================
+insightBackend:
+  enabled: true
+  nameOverride: insight-backend
+  hostname: '{{ tpl .Values.global.insightHostname $ }}'
+
+  replicaCount: 2
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 8
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+  updateStrategy:
+    type: RollingUpdate
+  serviceAccount: { create: false, name: "" }
+
+  image:
+    repository: openg2p/g2p-insight-backend
+    tag: develop
+    pullPolicy: Always
+
+  podSecurityContext: { enabled: false, fsGroup: 1000 }
+  containerSecurityContext: { enabled: false, runAsUser: 1000, runAsNonRoot: true }
+
+  service:
+    type: ClusterIP
+    port: 80
+    externalTrafficPolicy: Cluster
+
+  istio:
+    enabled: true
+    virtualservice:
+      enabled: true
+      host: '{{ tpl .Values.insightBackend.hostname $ }}'
+      gateway: "internal"
+      destination: ""
+      destinationPort: '{{ .Values.insightBackend.service.port }}'
+      prefix: /v1/insight/
+      rewriteUri: ""
+    gateway:
+      enabled: false
+      host: '{{ tpl .Values.insightBackend.hostname $ }}'
+      ingressController: { istio: ingressgateway }
+      httpTlsRedirect: false
+      httpEnabled: true
+      httpsEnabled: false
+      tls: { mode: SIMPLE, credentialName: "" }
+
+  # ------- App config — rendered to a ConfigMap, mounted at /app/config -------
+  appConfig:
+    service_id: openg2p.insight
+    api_version: "1.0"
+    catalog_path: /app/catalog
+    pii:
+      spacy_model: en_core_web_lg
+      enabled_recognizers: [PERSON, PHONE_NUMBER, EMAIL_ADDRESS, LOCATION]
+    embeddings:
+      model_name: all-MiniLM-L6-v2
+      cache_dir: /tmp/insight-embeddings
+    llm:
+      provider: anthropic
+      model: '{{ .Values.global.llmModel }}'
+      max_tokens: 4096
+      temperature: 0.0
+    cost_gate:
+      green:  { rows: 10000,   cost: 1000 }
+      yellow: { rows: 1000000, cost: 100000 }
+    k_anonymity:
+      default_k: 5
+    superset:
+      url: '{{ tpl .Values.global.supersetUrl $ }}'
+      auth_provider: db
+      username: insight-service-account
+    masterdata:
+      url: '{{ tpl .Values.global.masterDataServiceUrl $ }}'
+      sender_app_mnemonic: g2p-insight
+      cache_ttl_seconds: 86400
+
+  # ------- Catalog — rendered to a separate ConfigMap, mounted at /app/catalog
+  appCatalog:
+    # Override these blocks per deployment. The strings are mounted as
+    # /app/catalog/<name>.yaml and watched by the backend.
+    schemaYaml: |
+      deployment:
+        country_code: ""
+        default_currency: ""
+        k_anonymity: 5
+      tables: []
+      safe_views: []
+      geo_columns: []
+    piiRecognizersYaml: |
+      recognizers: []
+    vizTemplatesYaml: |
+      templates: []
+
+  envVars:
+    DB_HOST: '{{ tpl .Values.global.postgresqlHost $ }}'
+    DB_PORT: '{{ .Values.global.insightDBPort }}'
+    DB_NAME: '{{ tpl .Values.global.insightDB $ }}'
+    DB_USER: '{{ tpl .Values.global.insightDBUser $ }}'
+    CONFIG_PATH: /app/config/config.yaml
+    CATALOG_PATH: /app/catalog
+    INSIGHT__SUPERSET__URL: '{{ tpl .Values.global.supersetUrl $ }}'
+    INSIGHT__MASTERDATA__URL: '{{ tpl .Values.global.masterDataServiceUrl $ }}'
+    INSIGHT__LLM__MODEL: '{{ .Values.global.llmModel }}'
+
+  envVarsFrom:
+    DB_PASSWORD:
+      secretKeyRef:
+        name: '{{ tpl .Values.global.insightDBSecret $ }}'
+        key: '{{ tpl .Values.global.insightDBUserPasswordKey $ }}'
+    ANTHROPIC_API_KEY:
+      secretKeyRef:
+        name: '{{ .Values.global.anthropicApiKeySecret }}'
+        key: '{{ .Values.global.anthropicApiKeyKey }}'
+
+  startupProbe:   { enabled: true, httpGet: { path: /v1/insight/health, port: http }, initialDelaySeconds: 0,  periodSeconds: 10, timeoutSeconds: 5, failureThreshold: 30, successThreshold: 1 }
+  livenessProbe:  { enabled: true, httpGet: { path: /v1/insight/health, port: http }, initialDelaySeconds: 20, periodSeconds: 30, timeoutSeconds: 5, failureThreshold: 6,  successThreshold: 1 }
+  readinessProbe: { enabled: true, httpGet: { path: /v1/insight/health, port: http }, initialDelaySeconds: 0,  periodSeconds: 10, timeoutSeconds: 5, failureThreshold: 6,  successThreshold: 1 }
+
+  postgresCheckerInit:
+    enabled: true
+    image: { repository: jbergknoff/postgresql-client, tag: latest, pullPolicy: IfNotPresent }
+    command: ['sh']
+    args:
+      - '-c'
+      - 'until psql "postgresql://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}" -c "SELECT 1" > /dev/null 2>&1; do echo "Waiting for database ${DB_NAME} to be ready..."; sleep 3; done'
+    containerSecurityContext: { enabled: false }
+
+# ===========================================================================
+# Frontend
+# ===========================================================================
+insightFrontend:
+  enabled: true
+  nameOverride: insight-frontend
+  hostname: '{{ tpl .Values.global.insightHostname $ }}'
+
+  replicaCount: 2
+  serviceAccount: { create: false, name: "" }
+
+  image:
+    repository: openg2p/g2p-insight-frontend
+    tag: develop
+    pullPolicy: Always
+
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 8080
+    externalTrafficPolicy: Cluster
+
+  istio:
+    enabled: true
+    virtualservice:
+      enabled: true
+      host: '{{ tpl .Values.insightFrontend.hostname $ }}'
+      gateway: "internal"
+      destination: ""
+      destinationPort: '{{ .Values.insightFrontend.service.port }}'
+      prefix: /
+      rewriteUri: ""
+
+  envVars:
+    VITE_API_BASE_URL: 'https://{{ tpl .Values.global.insightHostname $ }}/v1/insight'
+    VITE_SUPERSET_URL: '{{ tpl .Values.global.supersetUrl $ }}'

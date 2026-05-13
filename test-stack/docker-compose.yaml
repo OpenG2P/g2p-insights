@@ -1,0 +1,101 @@
+name: g2p-insight-test
+
+# Local-only stack for end-to-end testing of OpenG2P Insight.
+# Services:
+#   postgres  — registry data + insight schema (port 5433 to avoid clash)
+#   superset  — local Apache Superset (no external dependency)
+#   backend   — openg2p-insight FastAPI
+#   frontend  — React app
+#
+# Master Data Service: NOT brought up locally. Insight talks to whatever URL
+# is in MASTERDATA_URL (default master-data.trial.openg2p.org). Make it
+# overridable via .env.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: insight-test-postgres
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: registry
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d registry"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # ---------------------------------------------------------------------------
+  # Apache Superset — minimal single-container setup using their official image.
+  # In real OpenG2P deployments this is replaced by superset.<env>.openg2p.org;
+  # the backend's `superset.url` config simply points elsewhere.
+  # ---------------------------------------------------------------------------
+  superset:
+    image: apache/superset:4.0.2
+    container_name: insight-test-superset
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8088:8088"
+    environment:
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-please-change-me-in-real-deploys}
+      ADMIN_USERNAME: ${SUPERSET_ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:-admin}
+      ADMIN_EMAIL: admin@example.com
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/superset
+    volumes:
+      - ./superset/superset_config.py:/app/pythonpath/superset_config.py:ro
+      - ./superset/docker-init.sh:/app/docker-init.sh:ro
+      - superset_home:/app/superset_home
+    entrypoint: ["/bin/bash", "/app/docker-init.sh"]
+
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: insight-test-backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: insight
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      CONFIG_PATH: /app/config/config.yaml
+      CATALOG_PATH: /app/catalog
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      INSIGHT__LLM__MODEL: ${INSIGHT__LLM__MODEL:-claude-opus-4-7}
+      INSIGHT__SUPERSET__URL: http://superset:8088
+      INSIGHT__SUPERSET__USERNAME: ${SUPERSET_ADMIN_USERNAME:-admin}
+      INSIGHT__SUPERSET__PASSWORD: ${SUPERSET_ADMIN_PASSWORD:-admin}
+      INSIGHT__MASTERDATA__URL: ${MASTERDATA_URL:-https://master-data.trial.openg2p.org}
+      INSIGHT__MASTERDATA__SENDER_APP_MNEMONIC: g2p-insight
+    volumes:
+      - ../backend/config:/app/config:ro
+      - ./postgres/catalog:/app/catalog:ro
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: http://localhost:8000/v1/insight
+        VITE_SUPERSET_URL: http://localhost:8088
+    container_name: insight-test-frontend
+    depends_on: [backend]
+    ports:
+      - "8080:8080"
+
+volumes:
+  pgdata:
+  superset_home:

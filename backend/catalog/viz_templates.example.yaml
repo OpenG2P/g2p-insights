@@ -1,0 +1,25 @@
+# Optional preset chart templates the LLM may pick from when authoring a
+# Superset chart. Each entry maps a friendly name to a form_data skeleton.
+
+templates:
+  - name: region_choropleth
+    description: "Choropleth over the country's top admin level."
+    form_data:
+      viz_type: deck_polygon
+      groupby: [region_code]
+
+  - name: gender_donut
+    description: "Donut chart split by gender."
+    form_data:
+      viz_type: pie
+      groupby: [gender]
+      pie_label_type: percent
+
+  - name: registration_velocity
+    description: "Line chart of registrations per day."
+    form_data:
+      viz_type: line
+      groupby: []
+      x_axis: registration_date
+      metrics:
+        - {aggregate: COUNT, label: "Registrations"}

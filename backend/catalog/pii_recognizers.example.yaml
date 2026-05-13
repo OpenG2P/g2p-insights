@@ -1,0 +1,13 @@
+# Country-specific PII recognizers loaded by PiiService at startup.
+# Patterns are passed to Presidio's PatternRecognizer.
+
+recognizers:
+  - entity: FAYDA_TOKEN
+    patterns:
+      - {name: fayda_numeric, regex: '\b\d{12}\b', score: 0.6}
+    context: [fayda, token]
+
+  - entity: AADHAAR
+    patterns:
+      - {name: aadhaar_grouped, regex: '\b\d{4}\s?\d{4}\s?\d{4}\b', score: 0.7}
+    context: [aadhaar, uid]

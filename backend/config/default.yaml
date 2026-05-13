@@ -1,0 +1,54 @@
+# OpenG2P Insight backend — default application config.
+# Mounted at /app/config/config.yaml in Kubernetes via the umbrella chart's
+# ConfigMap. Local-dev reads this default.yaml.
+
+service_id: openg2p.insight
+api_version: "1.0"
+
+catalog_path: /app/catalog
+
+pii:
+  spacy_model: en_core_web_lg
+  enabled_recognizers:
+    - PERSON
+    - PHONE_NUMBER
+    - EMAIL_ADDRESS
+    - LOCATION
+
+embeddings:
+  model_name: all-MiniLM-L6-v2
+  cache_dir: /tmp/insight-embeddings
+
+llm:
+  provider: anthropic
+  model: claude-opus-4-7
+  max_tokens: 4096
+  temperature: 0.0
+  # ANTHROPIC_API_KEY is read from env (never from this file).
+
+cost_gate:
+  green:
+    rows: 10000
+    cost: 1000
+  yellow:
+    rows: 1000000
+    cost: 100000
+
+k_anonymity:
+  default_k: 5
+
+superset:
+  # Override via INSIGHT__SUPERSET__URL or values.yaml.
+  url: https://superset.qa2.openg2p.org
+  auth_provider: db
+  username: insight-service-account
+  # password from env: INSIGHT__SUPERSET__PASSWORD
+
+masterdata:
+  url: https://masterdata.qa2.openg2p.org
+  sender_app_mnemonic: g2p-insight
+  cache_ttl_seconds: 86400
+
+cors:
+  allow_origins: ["*"]
+  allow_credentials: true

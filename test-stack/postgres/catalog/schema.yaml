@@ -1,0 +1,91 @@
+# Catalog for the local test stack — matches the SQL in
+# test-stack/postgres/init/02_nsr_schema.sql and 03_views_and_roles.sql.
+
+deployment:
+  country_code: ET
+  default_currency: ETB
+  k_anonymity: 5
+  master_data_service_url: ${INSIGHT__MASTERDATA__URL}
+
+tables:
+  - name: mv_individuals_summary
+    schema: public
+    description: "Pre-joined individuals with household-level fields, refreshed nightly."
+    row_count_estimate: 10000
+    refresh: "manual via REFRESH MATERIALIZED VIEW (use this view by default)"
+    indexed: [region_code, zone_code, woreda_code, gender, age_bracket, pmt_score, primary_livelihood]
+    columns:
+      - {name: id,                     type: int,    pii: pii,   description: "Internal individual id"}
+      - {name: household_id,           type: int,    pii: quasi, description: "FK to household"}
+      - {name: gender,                 type: enum,   pii: safe,  enum: [M, F, O]}
+      - {name: estimated_age,          type: int,    pii: quasi}
+      - {name: age_bracket,            type: enum,   pii: quasi, enum: ["0-5","6-17","18-35","36-55","55+"]}
+      - {name: region_code,            type: string, pii: safe,  description: "Ethiopia admin level 1 (region)"}
+      - {name: zone_code,              type: string, pii: safe,  description: "Ethiopia admin level 2 (zone)"}
+      - {name: woreda_code,            type: string, pii: safe,  description: "Ethiopia admin level 3 (woreda)"}
+      - {name: kebele_code,            type: string, pii: safe,  description: "Ethiopia admin level 4 (kebele)"}
+      - {name: primary_livelihood,     type: enum,   pii: safe,  enum: [CROP_FARMING, LIVESTOCK, PASTORALIST, MIXED, WAGE_LABOR, BUSINESS, OTHER]}
+      - {name: employment_status,      type: enum,   pii: safe,  enum: [EMPLOYED, SELF_EMPLOYED, UNEMPLOYED, STUDENT, OTHER]}
+      - {name: coping_strategies_index, type: int,   pii: safe,  description: "CSI score; higher = worse"}
+      - {name: disability_status,      type: enum,   pii: quasi, enum: [YES, NO, UNKNOWN]}
+      - {name: displacement_status,    type: enum,   pii: quasi, enum: [IDP, RETURNEE, REFUGEE, HOST_COMMUNITY]}
+      - {name: pastoralist_classification, type: enum, pii: safe, enum: [PASTORALIST, SEMI_PASTORALIST, SETTLED]}
+      - {name: plw_status,             type: bool,   pii: quasi, description: "Pregnant or lactating"}
+      - {name: orphanhood_flag,        type: bool,   pii: quasi}
+      - {name: chronic_illness_flag,   type: bool,   pii: quasi}
+      - {name: pmt_score,              type: float,  pii: safe,  description: "Proxy Means Test score for the individual"}
+      - {name: monthly_income,         type: float,  pii: safe,  unit: ETB}
+      - {name: household_pmt_score,    type: float,  pii: safe}
+      - {name: household_monthly_income, type: float, pii: safe, unit: ETB}
+      - {name: household_size,         type: int,    pii: safe}
+      - {name: headship_type,          type: enum,   pii: safe,  enum: [MALE_HEADED, FEMALE_HEADED, ELDERLY_HEADED, CHILD_HEADED, DISABLED_HEADED]}
+      - {name: female_headed,          type: bool,   pii: safe}
+      - {name: fayda_verified,         type: bool,   pii: safe}
+      - {name: verification_method,    type: enum,   pii: safe,  enum: [FAYDA, MANUAL, UNVERIFIED]}
+      - {name: created_at,             type: timestamp, pii: safe}
+
+  - name: mv_district_aggregates
+    schema: public
+    description: "Pre-aggregated counts by region/zone/woreda × gender × age_bracket. Use first for any district-level question — 10000x faster than the source."
+    row_count_estimate: 1000
+    refresh: "manual via REFRESH MATERIALIZED VIEW"
+    indexed: [region_code]
+    columns:
+      - {name: region_code,     type: string, pii: safe}
+      - {name: zone_code,       type: string, pii: safe}
+      - {name: woreda_code,     type: string, pii: safe}
+      - {name: gender,          type: enum,   pii: safe,  enum: [M, F, O]}
+      - {name: age_bracket,     type: enum,   pii: quasi}
+      - {name: total,           type: int,    pii: safe}
+      - {name: avg_pmt,         type: float,  pii: safe}
+      - {name: avg_income,      type: float,  pii: safe, unit: ETB}
+      - {name: disability_count, type: int,   pii: safe}
+      - {name: plw_count,       type: int,    pii: safe}
+      - {name: idp_count,       type: int,    pii: safe}
+
+pii_columns_in_source:
+  - {table: g2p_register_individuals, column: full_name}
+  - {table: g2p_register_individuals, column: primary_phone}
+  - {table: g2p_register_individuals, column: alternate_phone}
+  - {table: g2p_register_individuals, column: address_descriptor}
+  - {table: g2p_register_individuals, column: contact_person_name}
+  - {table: g2p_register_individuals, column: gps_latitude}
+  - {table: g2p_register_individuals, column: gps_longitude}
+  - {table: g2p_register_individuals, column: fayda_token}
+  - {table: g2p_register_individuals, column: rid}
+  - {table: g2p_register_households,  column: head_full_name}
+  - {table: g2p_register_households,  column: contact_phone}
+  - {table: g2p_register_households,  column: address_line}
+  - {table: g2p_register_households,  column: rid}
+
+safe_views:
+  - v_individuals_safe
+  - v_households_safe
+  - mv_individuals_summary
+  - mv_district_aggregates
+
+geo_columns:
+  - {column: region_code, level_mnemonic: region}
+  - {column: zone_code,   level_mnemonic: zone}
+  - {column: woreda_code, level_mnemonic: woreda}
+  - {column: kebele_code, level_mnemonic: kebele}

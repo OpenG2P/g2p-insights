@@ -46,6 +46,8 @@ Built to be deployed per-country into the existing OpenG2P Kubernetes stack alon
 | Local PII proxy (Presidio + spaCy) before any cloud LLM call | Local / air-gapped LLM |
 | Cloud LLM (Anthropic Claude) via tool-use; key per deployment | Air-gapped deployment mode |
 | NL → intent JSON → safe SQL → execute locally → result + viz | Differential privacy noise |
+| Multi-turn **clarification loop** when intent is ambiguous (LLM asks; user answers via option buttons or free text) | — (in MVP) |
+| Generated SQL **always visible** to the user for review (no approval required) | — (in MVP) |
 | Cost gate (EXPLAIN + static checks) with user warnings | Empirical cost-threshold auto-tuning |
 | k-anonymity on results (default `k=5`, per-deployment override) | Per-role `k` thresholds |
 | Generic statistical engine; one reference function (e.g. distribution) | Full library of expert functions |
@@ -398,53 +400,84 @@ The level hierarchy is **not hardcoded** — multiple countries can be onboarded
 
 ## 7. Core data flows
 
-### Flow A — Natural-language ad-hoc query
+### Flow A — Natural-language ad-hoc query (with clarifications)
+
+The LLM is given **two tools** and must call exactly one per turn:
+`request_clarification` (asks the user something) or `propose_intent`
+(commits to a query plan). The controller drives a multi-turn conversation,
+persisting state in `insight.chat_session` so the user can answer at their
+own pace.
 
 ```
-Browser → POST /ask {question, session_id}
+Turn 1 ── Browser → POST /ask {question}
   │
-  ├─ PiiService.sanitize(question)            (local, never network)
-  │   • Presidio + spaCy NER
-  │   • Replaces names/IDs/phones with [PERSON_1], [ID_1], …
-  │   • Stores reverse map locally per session
+  ├─ PiiService.sanitize(question)              (local, never network)
+  │   • Presidio + spaCy NER → placeholders
+  │   • Reverse map stored against session_id
   │
   ├─ SchemaService.retrieve_relevant(question)
-  │   • Local embedding model
-  │   • pgvector lookup against indexed table/column descriptions
+  │   • Local embedding model + pgvector
   │   • FK-graph walk for join candidates
   │
-  ├─ LlmService.plan(sanitized_question, schemas)
-  │   • Claude tool-use loop with tools:
-  │       - get_schema(table)
-  │       - get_exchange_rate(from, to)
-  │       - get_geo_levels(country)
-  │       - propose_intent(intent_json)
-  │   • Returns intent JSON: filters, group_by, viz, assumptions
+  ├─ LlmService.plan(sanitized, schemas, history=[])
+  │   • Claude tool-use loop
+  │   • Returns EITHER Intent OR Clarification
   │
-  ├─ SqlPlannerService.build(intent_json)
-  │   • Validates that all referenced columns are in catalog & safe
-  │   • Produces parameterized SQL targeting v_/mv_ views only
-  │   • Re-injects PII placeholders (e.g. [PERSON_1] → 'John Mayer')
+  ├─ if Clarification → persist + respond:
+  │     { status: "needs_clarification",
+  │       session_id, clarification: { question, options[], context },
+  │       messages: [...thread so far] }
+  │   The UI renders the question with clickable options (or a free-text
+  │   box). Loop continues at turn N below.
+  │
+  └─ if Intent → continue to planning ↓
+
+Turn N ── Browser → POST /ask/clarify {session_id, option_id | text}
+  │   • Appends the user's answer to insight.chat_session.messages
+  │   • LlmService.plan(sanitized, schemas, history=<full thread>)
+  │   • LLM may clarify again (rare) or commit to an Intent
+  │
+Commit ── once Intent is committed:
+  │
+  ├─ SqlPlannerService.build(intent, placeholder_map)
+  │   • Allow-listed views/columns only
+  │   • Parameterised SQL; PII placeholders re-injected here
   │
   ├─ CostGateService.assess(sql)
-  │   • Static analysis: SELECT-only, join count, no SELECT *
-  │   • EXPLAIN (FORMAT JSON) without ANALYZE
-  │   • Classify GREEN / YELLOW / RED
+  │   • Static + EXPLAIN  →  GREEN / YELLOW / RED
   │
-  ├─ if RED  → respond with reason + suggested reformulation
-  │  if YELLOW → return preview metadata; UI asks user to confirm
-  │  if GREEN → continue
+  ├─ if RED     → respond status=rejected   (SQL still shown)
+  │  if YELLOW  → respond status=needs_confirmation (SQL shown; user clicks Run anyway)
+  │  if GREEN   → run immediately
   │
-  ├─ QueryExecutorService.run(sql)
-  │   • Read-only role, statement_timeout=30s
-  │
-  ├─ KAnonymityFilter.apply(rows, group_by, k)
-  │   • Suppress / generalize groups with size < k
-  │
+  ├─ QueryExecutorService.run(sql)   (insight_ai role, 30s timeout)
+  ├─ KAnonymity.apply(rows, group_by, k)
   ├─ AuditService.record(user, question, sql, cost, rows)
   │
-  └─ → {rows, viz_spec, assumptions, pii_redactions, cost}
+  └─ → { status: "ok", session_id, sql, cost, rows, viz_spec,
+         assumptions, pii_redactions, k_suppressions, messages }
 ```
+
+**SQL visibility — always on, never blocking.**
+Every response that has reached the planning stage carries the generated
+SQL in `sql`. The UI shows it in an inline panel (collapsed for GREEN,
+expanded for YELLOW / RED). We do **not** wait for the user to approve the
+SQL before running — the cost gate makes that decision. The intent is to
+make the system reviewable, not to slow down the analyst.
+
+**When the LLM asks for clarification.**
+Examples that trigger `request_clarification`:
+- "Show me women with low income in Oromia" → which `monthly_income`
+  (individual or household)? what threshold for "low"?
+- "Recent registrations" → what time window?
+- "Displaced households" → IDP, REFUGEE, RETURNEE, or any of those?
+- "Average PMT in Bahir Dar" → no geo code matches; the LLM offers the
+  closest zone or asks for the woreda.
+- Place name not in the cached MDS hierarchy → offer the closest matches.
+
+Options are returned as a list of `{id, label, description}`. The UI
+presents them as buttons; the user can also type a free-text answer when
+`free_text_allowed` is true (the default).
 
 ### Flow B — NL-driven Superset chart authoring
 
@@ -531,19 +564,24 @@ See §10.
 Before any query touches the database, `cost_gate_service.py` runs:
 
 1. **Static analysis** (instant)
-   - SELECT-only? Else reject.
-   - Join count ≤ 5? Else warn.
+   - SELECT-only? Else RED.
+   - Join count ≤ 5? Else RED.
    - Has WHERE on a large table without an indexed column? Warn.
-   - Mentions only allow-listed tables? Else reject.
+   - Mentions only allow-listed tables? Else RED.
 
 2. **Planner estimate** (~ms)
    - `EXPLAIN (FORMAT JSON) <sql>` — no execution, just the planner's estimate.
    - Extract `Plan Rows` and `Total Cost`.
+   - If EXPLAIN itself fails (bad column, etc.), we classify as **RED** — never as
+     YELLOW. The reasoning: if Postgres can't even price the query, we will not
+     run it.
 
 3. **Classification**
    - `GREEN` — auto-execute.
-   - `YELLOW` — return the cost report to the UI; user clicks **Run anyway** or **Use suggested faster query**.
-   - `RED` — refuse; explain why; offer to reformulate.
+   - `YELLOW` — return the cost report to the UI; the SQL is shown immediately
+     and a `Run anyway` button posts to `/ask/confirm`, which reuses the cached
+     intent (deterministic — does not re-call the LLM).
+   - `RED` — refuse; the SQL is still shown for review; offer to reformulate.
 
 4. **Suggested optimization**
    - If a matching materialized view exists in the catalog, suggest using it (`mv_district_aggregates` typically 10⁴× faster).
@@ -553,14 +591,34 @@ Before any query touches the database, `cost_gate_service.py` runs:
 
 The thresholds for GREEN/YELLOW/RED are configurable per deployment in `appConfig.costGate`.
 
+**Long-running-query alerting.** Cost classification runs on every planned
+query. YELLOW raises a banner in the UI with the estimated rows + bottleneck
+and a one-click `Run anyway`. RED rejects outright with a reason. Combined
+with the 30-second hard statement timeout this means the platform will not
+silently sit on an expensive query.
+
 ---
 
 ## 10. k-anonymity and result safety
 
 After execution, before returning to the UI:
 
-- For grouped queries, any group with `count < k` (default `k = 5`, configurable per deployment in `catalog/schema.yaml` → `deployment.k_anonymity`) is **suppressed** or **generalized**: the row is returned with the bucket value redacted and the count shown as `< k`.
-- Single-row "identify an individual" results are rejected at the validator layer (the SQL must contain an aggregation or have a `LIMIT` with explicit user opt-in for raw rows, gated by role).
+- The SQL planner **always projects `COUNT(*) AS _k_count`** for any
+  `GROUP BY` query, even when the user's chosen metric is `AVG` / `SUM` /
+  `MIN` / `MAX`. This is the only way to enforce k-anonymity for non-count
+  metrics — without an explicit count column we'd silently return averages
+  over tiny cohorts (a real re-identification risk).
+- Any group with `_k_count < k` (default `k = 5`, configurable per deployment
+  in `catalog/schema.yaml` → `deployment.k_anonymity`) is **suppressed**: the
+  group-by values become `<suppressed>` and the metric becomes `<k`.
+- The executor **strips `_k_count` from the response** before it leaves the
+  backend — the user never sees the internal column.
+- **Fail-secure**: if the planner forgets to include `_k_count` on a grouped
+  query (shouldn't happen, but defense-in-depth), `apply_k_anonymity` returns
+  an empty result rather than the raw rows.
+- Single-row "identify an individual" results are rejected at the validator
+  layer (the SQL must contain an aggregation; raw-row results require explicit
+  user opt-in and a role that allows it).
 - Per-role k-thresholds are deferred to v2; MVP uses one k per deployment.
 
 ---
@@ -764,6 +822,28 @@ In priority order after the MVP lands:
 9. Multi-turn conversation memory in Ask.
 10. Scheduled reports (PDF/XLSX) and watermarked exports.
 11. Full i18n with locale switching.
+
+---
+
+## 16a. Verification
+
+Three layers of tests:
+
+| Layer | Where | What it covers |
+|-------|-------|----------------|
+| Unit tests | `backend/tests/test_*.py` | sql_safety, k-anonymity (incl. AVG/SUM fail-secure), schema-service allowlist, sql_planner (`_k_count`, IN expansion, unsafe identifier rejection), PII span merging, LLM clarification / intent / no-tool-fallback. |
+| Integration test (Python) | `backend/tests/test_integration_flow.py` | Drives `/ask` → `/ask/clarify` → committed intent against the live test stack. Skipped automatically when `INSIGHT_BASE_URL` isn't reachable. |
+| Integration smoke (script) | `test-stack/scripts/integration_smoke.py` (run via `make smoke`) | Verifies health, catalog, geo (live MDS), simple aggregate, PII redaction, clarification loop, cost-gate alerting on unbounded queries, k-anonymity field shape. Prints PASS/FAIL per check. |
+
+Running the smoke against a local stack:
+
+```bash
+cd test-stack
+make up
+make seed-md   # snapshot live MDS geo
+make seed      # 10k synthetic individuals
+make smoke     # runs scripts/integration_smoke.py
+```
 
 ---
 
