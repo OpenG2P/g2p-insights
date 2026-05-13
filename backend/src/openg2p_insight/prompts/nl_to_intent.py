@@ -58,12 +58,30 @@ WHEN TO PROPOSE (call `propose_intent`):
          as an assumption AND apply the converted threshold in the filter.
       7. List every assumption in `assumptions` — including reasonable
          defaults you chose when not asked.
+      7a. **Count of rows vs count of distinct values.** When the user asks
+          *"how many X"* where X is a categorical column (regions, woredas,
+          livelihoods, programs, …), use `metric=count_distinct` with
+          `metric_column=<that_column>`. DO NOT use `metric=count` for these —
+          `count` returns row count, which is almost always the wrong answer
+          to "how many distinct X" questions. Example: "how many regions" →
+          `metric=count_distinct, metric_column=region_code` (returns the
+          number of unique region codes, not the number of rows).
       8. **Naming the aggregate column in `order_by`.** The platform aliases
          the chosen metric as `total` (when metric=count) or `metric_value`
          (for sum/avg/min/max). To sort by the aggregate, use one of those
          names — e.g. `order_by: ["total DESC"]` or `["metric_value DESC"]`.
          Natural-language names like `count` are normalised server-side too,
          so either works, but prefer the alias for clarity.
+      9. **`limit` and cardinality.** Column descriptions may hint at typical
+         distinct-value counts (e.g. "region — ~5 distinct values"). When the
+         user asks for "top/bottom N" and N is LARGER than that hint, do one of:
+           (a) drop `limit` and return everything sorted, OR
+           (b) call `request_clarification` to offer a finer-grained column
+               (e.g. user said "top 10 regions" but only ~5 regions exist —
+                offer "top 10 woredas" instead).
+         Whichever you pick, ALWAYS surface it in `assumptions` so the user
+         understands. Example: "Only ~5 distinct regions exist in this
+         dataset; returning all 5 sorted ascending instead of LIMIT 10."
 
 VISUALISATION RULES — populate the `viz` field carefully:
 
@@ -110,10 +128,14 @@ INTENT_TOOL_SCHEMA = {
         "type": "object",
         "properties": {
             "intent": {"type": "string", "enum": ["aggregate", "distribution", "raw"]},
-            "metric": {"type": "string", "enum": ["count", "sum", "avg", "min", "max"]},
+            "metric": {
+                "type": "string",
+                "enum": ["count", "count_distinct", "sum", "avg", "min", "max"],
+                "description": "count = COUNT(*) (row count); count_distinct = COUNT(DISTINCT metric_column) — use for 'how many distinct/unique X' questions like 'how many regions'.",
+            },
             "metric_column": {
                 "type": "string",
-                "description": "REQUIRED whenever metric != 'count'. The column the aggregate applies to (e.g. for 'avg monthly_income', set metric='avg' and metric_column='monthly_income').",
+                "description": "REQUIRED whenever metric != 'count'. The column the aggregate applies to. For count_distinct, this is the column to count distinct values of (e.g. 'how many regions' → metric=count_distinct, metric_column=region_code).",
             },
             "entity": {"type": "string", "description": "Allow-listed table/view name."},
             "filters": {

@@ -62,8 +62,11 @@ class VizSpec(BaseModel):
 class Intent(BaseModel):
     kind: Literal["intent"] = "intent"
     intent: str = "aggregate"           # "aggregate" | "distribution" | "raw"
-    metric: str = "count"               # count | sum | avg | min | max
-    metric_column: Optional[str] = None  # required for any metric != "count"
+    # count           → COUNT(*)
+    # count_distinct  → COUNT(DISTINCT <metric_column>)   ← requires metric_column
+    # sum/avg/min/max → SUM(...)/AVG(...)/...             ← requires metric_column
+    metric: str = "count"
+    metric_column: Optional[str] = None
     entity: str
     filters: List[Filter] = Field(default_factory=list)
     group_by: List[str] = Field(default_factory=list)

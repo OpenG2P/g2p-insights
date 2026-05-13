@@ -20,10 +20,10 @@ tables:
       - {name: gender,                 type: enum,   pii: safe,  enum: [M, F, O]}
       - {name: estimated_age,          type: int,    pii: quasi}
       - {name: age_bracket,            type: enum,   pii: quasi, enum: ["0-5","6-17","18-35","36-55","55+"]}
-      - {name: region_code,            type: string, pii: safe,  description: "Ethiopia admin level 1 (region)"}
-      - {name: zone_code,              type: string, pii: safe,  description: "Ethiopia admin level 2 (zone)"}
-      - {name: woreda_code,            type: string, pii: safe,  description: "Ethiopia admin level 3 (woreda)"}
-      - {name: kebele_code,            type: string, pii: safe,  description: "Ethiopia admin level 4 (kebele)"}
+      - {name: region_code,            type: string, pii: safe,  description: "Ethiopia admin level 1 (region) — ~5 distinct values in this deployment"}
+      - {name: zone_code,              type: string, pii: safe,  description: "Ethiopia admin level 2 (zone) — ~15 distinct values"}
+      - {name: woreda_code,            type: string, pii: safe,  description: "Ethiopia admin level 3 (woreda) — dozens to hundreds of distinct values; use this for top-N rankings"}
+      - {name: kebele_code,            type: string, pii: safe,  description: "Ethiopia admin level 4 (kebele) — typically hundreds to thousands of distinct values"}
       - {name: primary_livelihood,     type: enum,   pii: safe,  enum: [CROP_FARMING, LIVESTOCK, PASTORALIST, MIXED, WAGE_LABOR, BUSINESS, OTHER]}
       - {name: employment_status,      type: enum,   pii: safe,  enum: [EMPLOYED, SELF_EMPLOYED, UNEMPLOYED, STUDENT, OTHER]}
       - {name: coping_strategies_index, type: int,   pii: safe,  description: "CSI score; higher = worse"}

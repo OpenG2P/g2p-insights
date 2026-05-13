@@ -111,6 +111,28 @@ def test_unsafe_identifier_rejected():
         svc.build(intent, placeholder_map={})
 
 
+def test_count_distinct_emits_proper_sql():
+    """`metric=count_distinct` with `metric_column=region_code` must produce
+    COUNT(DISTINCT region_code) — needed for 'how many regions' style
+    questions where plain COUNT(*) returns the wrong number."""
+    svc = _svc_with_catalog(["mv_individuals_summary"])
+    intent = Intent(
+        entity="mv_individuals_summary",
+        metric="count_distinct",
+        metric_column="region_code",
+    )
+    planned = svc.build(intent, placeholder_map={})
+    assert "COUNT(DISTINCT region_code) AS total" in planned.sql
+
+
+def test_count_distinct_requires_metric_column():
+    svc = _svc_with_catalog(["mv_individuals_summary"])
+    intent = Intent(entity="mv_individuals_summary", metric="count_distinct")
+    with pytest.raises(ValueError) as ei:
+        svc.build(intent, placeholder_map={})
+    assert "metric_column" in str(ei.value)
+
+
 def test_order_by_count_is_normalised_to_total_alias():
     """LLMs naturally emit ORDER BY count DESC; the planner aliases COUNT(*)
     as `total`, so without normalisation Postgres errors with 'column count

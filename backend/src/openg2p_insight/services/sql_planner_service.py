@@ -26,7 +26,7 @@ from openg2p_fastapi_common.service import BaseService
 from .llm_service import Filter, Intent
 from .schema_service import SchemaService
 
-_AGG_FUNCS = {"count", "sum", "avg", "min", "max"}
+_AGG_FUNCS = {"count", "count_distinct", "sum", "avg", "min", "max"}
 _OPS = {
     "eq": "=",
     "neq": "!=",
@@ -110,6 +110,13 @@ class SqlPlannerService(BaseService):
 
         if metric == "count":
             agg = "COUNT(*) AS total"
+        elif metric == "count_distinct":
+            if not intent.metric_column:
+                raise ValueError(
+                    "metric='count_distinct' requires metric_column to be set on the Intent"
+                )
+            col = self._safe_ident(intent.metric_column)
+            agg = f"COUNT(DISTINCT {col}) AS total"
         else:
             if not intent.metric_column:
                 raise ValueError(
@@ -123,6 +130,8 @@ class SqlPlannerService(BaseService):
             if metric == "count":
                 # COUNT(*) AS total IS the k-anonymity count too — alias it.
                 return f"{cols}, COUNT(*) AS total, COUNT(*) AS {K_COUNT_COL}", True
+            # For count_distinct / sum / avg / min / max, the metric column
+            # is different from the k-anonymity row count, so emit both.
             return f"{cols}, {agg}, COUNT(*) AS {K_COUNT_COL}", True
 
         return agg, False

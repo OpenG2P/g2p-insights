@@ -47,9 +47,12 @@ export DB_PASSWORD="${DB_PASSWORD:-postgres}"
 export COMMON_OPENAPI_COMMON_API_PREFIX="${COMMON_OPENAPI_COMMON_API_PREFIX:-/v1/insight}"
 export COMMON_DB_DATASOURCE="${COMMON_DB_DATASOURCE:-postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}}"
 
-# Config + catalog (use the test-stack catalog the dockerised backend was using)
+# Config + catalog. Note: the backend's Pydantic Settings has env_prefix="insight_",
+# so the catalog path must be exported as INSIGHT_CATALOG_PATH (not plain
+# CATALOG_PATH — that's only used inside the docker image where the default
+# `/app/catalog` happens to be the right baked-in path).
+export INSIGHT_CATALOG_PATH="${INSIGHT_CATALOG_PATH:-$(pwd)/../test-stack/postgres/catalog}"
 export CONFIG_PATH="${CONFIG_PATH:-$(pwd)/config/default.yaml}"
-export CATALOG_PATH="${CATALOG_PATH:-$(pwd)/../test-stack/postgres/catalog}"
 
 # External services (point at dockerised ports on localhost)
 export INSIGHT_SUPERSET__URL="${INSIGHT_SUPERSET__URL:-http://localhost:8088}"

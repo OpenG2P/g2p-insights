@@ -856,25 +856,46 @@ The model does **not** need vision, code execution, long-context retrieval, or c
 
 | Model | Size | Tool use | Schema-grounding | Multi-turn | Notes |
 |-------|------|----------|------------------|-----------|-------|
-| **Qwen 2.5 72B Instruct** | 72B | ★★★★ | ★★★★ | ★★★ | Top pick. Apache 2.0. Native function calling. Strong multilingual (relevant for OpenG2P) |
-| **Llama 3.3 70B Instruct** | 70B | ★★★★ | ★★★★ | ★★★ | Mature, well-supported by vLLM. Meta Llama Community License |
-| **DeepSeek V3** | 671B MoE (~37B active) | ★★★★ | ★★★★ | ★★★★ | Frontier-level reasoning. Open weights. Heavy to host but cheap inference per token |
-| **Mistral Small 3 24B** | 24B | ★★★ | ★★★ | ★★ | Smaller, fast. Good budget option |
-| **Qwen 2.5 32B Coder** | 32B | ★★★ | ★★★★ | ★★ | Surprisingly strong at SQL-shaped tasks; weaker at clarification |
-| SQLCoder-70B (Defog) | 70B | ★★ | ★★★★★ | ★ | SQL specialist; clarification flow doesn't work — would need external orchestration |
-| Gemma 2 27B | 27B | ★★ | ★★★ | ★★ | Decent; tool-use less polished |
+| **Qwen3-32B Instruct** | 32B | ★★★★ | ★★★★ | ★★★★ | **Top pick.** Apache 2.0. Native function calling. Hybrid thinking mode. Fits 1× A6000 at INT8. |
+| **Qwen3-30B-A3B** (MoE) | 30B total / 3B active | ★★★★ | ★★★★ | ★★★ | Same family, faster inference at similar quality. vLLM `--enable-expert-parallel`. |
+| **Qwen 2.5 72B Instruct** | 72B | ★★★★ | ★★★★ | ★★★ | Larger alternative. Needs 2× A100 80GB or 1× H100 80GB. Marginal quality gain for our task. |
+| **Llama 3.3 70B Instruct** | 70B | ★★★★ | ★★★★ | ★★★ | Mature, well-supported by vLLM. Meta Llama Community License. Same hardware as 72B. |
+| **DeepSeek V3** | 671B MoE (~37B active) | ★★★★ | ★★★★ | ★★★★ | Frontier-level reasoning. Open weights. Heavy to host but cheap inference per token. |
+| **Mistral Small 3 24B** | 24B | ★★★ | ★★★ | ★★ | Smaller, fast. Good budget option. |
+| SQLCoder-70B (Defog) | 70B | ★★ | ★★★★★ | ★ | SQL specialist; no function calling — would break our clarification + Intent JSON pipeline. |
+| Gemma 2 27B | 27B | ★★ | ★★★ | ★★ | Decent; tool-use less polished. |
 
 ★ ratings are estimates for *this specific workload*, not general benchmarks.
 
 ### Recommended stack for OpenG2P deployments
 
-1. **First choice — Qwen 2.5 72B Instruct.** Apache 2.0, native function-calling format that's OpenAI-compatible (so our `INTENT_TOOL_SCHEMA` works almost as-is), strong multilingual. Has a 32B sibling for environments that can't host 72B — same prompt usually transfers.
+1. **Default — Qwen3-32B Instruct.** Best quality among models that fit a single
+   commodity GPU. Native function-calling (our `INTENT_TOOL_SCHEMA` works as-is),
+   hybrid thinking mode for clarification routing, Apache 2.0. The same model
+   runs on OpenRouter (for testing) and on the eventual self-hosted vLLM
+   instance — **no model swap when you go on-prem**, just a base-URL change.
+   **A6000 (48 GB) fit:** INT8 ~33 GB ✓ comfortable, INT4 ~17 GB ✓ ample
+   headroom. Latency 8–15 s per turn at INT8.
 
-2. **Alternative — Llama 3.3 70B Instruct.** Equally capable, more mature ecosystem (better vLLM optimisation, more community tooling).
+2. **Fast alternative — Qwen3-30B-A3B (MoE).** 30 B total parameters but only
+   3 B active per token — noticeably faster inference, quality close to dense
+   32 B for our workload. Useful when latency on A6000 matters. Serving in
+   vLLM needs `--enable-expert-parallel`.
 
-3. **Serving stack — vLLM.** OpenAI-compatible tool-use API. Means we swap Anthropic for an OpenAI client and point at our vLLM endpoint with minimal code changes.
+3. **Larger-hardware alternative — Qwen 2.5 72B / Llama 3.3 70B.** When the
+   deployment has 2× A100 80 GB or H100 80 GB available. Marginal quality
+   gain for our specific task; not worth the extra hardware unless it's
+   already there.
 
-**Hardware:** 72B/70B needs ~2× A100 80GB or 2× H100 80GB for decent throughput. Single A100 80GB for the 32B variants.
+4. **Serving stack — vLLM.** OpenAI-compatible tool-use API. Means we swap
+   Anthropic for an OpenAI client and point at our vLLM endpoint with minimal
+   code changes (~30 lines, already on the roadmap as item 6).
+
+**Hardware quick reference:**
+- A6000 48 GB (single) → Qwen3-32B at INT8, or 30B-A3B MoE
+- A100 40 GB (single) → Qwen3-32B at INT4
+- A100 80 GB / H100 80 GB (single) → Qwen3-32B at FP16, or 72B-class at INT8
+- 2× H100 80 GB → Qwen 2.5 72B at FP16
 
 ### Code changes needed to swap LLM providers
 
@@ -899,8 +920,8 @@ System prompt usually needs minor tightening when moving from Claude to open mod
 
 ### Realistic tradeoffs vs Claude
 
-| Aspect | Claude Opus 4.7 | Qwen 2.5 72B / Llama 3.3 70B |
-|--------|----------------|------------------------------|
+| Aspect | Claude Opus 4.7 | Qwen3-32B (or 72B-class) |
+|--------|----------------|--------------------------|
 | Knows when to clarify | Excellent | Good — sometimes over-clarifies or commits when it shouldn't |
 | Respects negative rules ("don't invent enum values") | Reliable | Mostly reliable; planner-side validator catches the rest |
 | Multi-turn coherence over 4+ turns | Excellent | Good — occasionally loses thread |
@@ -918,10 +939,58 @@ The protections we built — cost gate, planner enum validation, allow-listed vi
 
 Tracked in §16 as roadmap item 6 (Air-gapped LLM). The recommended order:
 1. Add the `openai_compatible` branch in `LlmService` so the switch is one config flag away.
-2. Stand up a vLLM endpoint serving Qwen 2.5 72B (test box first).
+2. Stand up a vLLM endpoint serving Qwen3-32B (test box first; fits 1× A6000).
 3. Run the integration smoke + a 20-question evaluation set against both Claude and Qwen.
 4. Tune the system prompt for the gap.
 5. Cut over per-deployment via Helm values.
+
+### On-prem / sovereignty deployment
+
+For deployments that cannot use a cloud LLM at all — data residency regulations,
+sovereign-cloud requirements, classified data, etc. — **the recommended path is
+Qwen3-32B Instruct served by vLLM inside the customer's own infrastructure**.
+Same model on OpenRouter for testing and on the self-hosted vLLM endpoint in
+production — no model swap when going on-prem, just a base-URL change.
+Fits a single A6000 (48 GB) at INT8 with comfortable headroom.
+
+**Why this model family fits this codebase**
+
+- Native function-calling support that is OpenAI-API-compatible — our
+  `INTENT_TOOL_SCHEMA` and the multi-turn clarification loop work as-is.
+- Apache 2.0 (Qwen) or Llama Community License — usable across deployments
+  without per-country procurement friction.
+- Multilingual — relevant for OpenG2P's deployment countries.
+- Fits on a single modern data-centre GPU with vLLM (INT8 or INT4 quantisation).
+- Air-gapped end-to-end: model weights, schema, sanitised queries, and results
+  all stay on the customer's infrastructure. Nothing leaves the cluster.
+
+**What we lose compared to Claude on this workload**
+
+- More clarification turns on average — questions Claude would commit on, the
+  open model often clarifies. UX cost, not a correctness one.
+- Occasionally weaker SQL for novel joins. Rarely matters here because the
+  workload is materialised-view-heavy.
+- Slightly more enum hallucination — but the planner's enum validator (§9, §10)
+  catches it before EXPLAIN.
+- Per-query latency is bounded by local hardware rather than an API SLA.
+
+**Why we did NOT pick SQLCoder-70B for on-prem**
+
+SQLCoder is a strong NL→SQL specialist but a poor fit for our pipeline:
+
+- No tool use / function calling — would break the clarification loop and the
+  Intent-JSON contract the planner depends on.
+- Single-turn by design — multi-turn refinement isn't supported.
+- No viz / `assumptions` / `applies` metadata — would force a simplified UI.
+- For schema-constrained NL→SQL specifically, general 70B models are nearly as
+  good AND preserve the rest of the pipeline.
+
+**Switch effort**
+
+Tracked as roadmap item 6 (§16). End-state: add an `openai_compatible` provider
+branch in `LlmService` (~30 lines), point `INSIGHT_LLM__BASE_URL` at the vLLM
+endpoint, and update the Helm chart to reference the on-prem URL instead of
+the Anthropic secret. Frontend is unchanged.
 
 ---
 
