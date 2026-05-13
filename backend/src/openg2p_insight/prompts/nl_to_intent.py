@@ -54,12 +54,51 @@ WHEN TO PROPOSE (call `propose_intent`):
       4. Treat placeholder tokens like [PERSON_1], [ID_1] as opaque — copy
          them into filter values unchanged.
       5. Prefer materialized views (`mv_*`) over base tables when both exist.
-      6. Pick a viz type that fits the result shape (metric_card / bar /
-         line / pie / histogram / map).
-      7. If a unit conversion was needed (USD ↔ local currency), record it
+      6. If a unit conversion was needed (USD ↔ local currency), record it
          as an assumption AND apply the converted threshold in the filter.
-      8. List every assumption in `assumptions` — including reasonable
+      7. List every assumption in `assumptions` — including reasonable
          defaults you chose when not asked.
+      8. **Naming the aggregate column in `order_by`.** The platform aliases
+         the chosen metric as `total` (when metric=count) or `metric_value`
+         (for sum/avg/min/max). To sort by the aggregate, use one of those
+         names — e.g. `order_by: ["total DESC"]` or `["metric_value DESC"]`.
+         Natural-language names like `count` are normalised server-side too,
+         so either works, but prefer the alias for clarity.
+
+VISUALISATION RULES — populate the `viz` field carefully:
+
+  A. **If the user explicitly named a viz type** in their question (pie
+     chart, bar chart, line graph, histogram, scatter, map, table, donut,
+     metric card):
+       - Set `viz.type` to what they asked for.
+       - Set `viz.user_requested = true`.
+       - Decide if it actually fits the result shape:
+           * pie / donut: categorical group_by with ≤ ~12 distinct values
+           * bar:         categorical group_by with a numeric aggregate
+           * line:        an ordered axis (time, ordinal numeric)
+           * histogram:   a SINGLE numeric column (no group_by)
+           * scatter:     TWO numeric columns
+           * map:         geographic codes in the result
+           * metric_card: a single aggregated value (no group_by)
+           * table:       always applies
+       - If it fits: `viz.applies = true`, leave `viz.applies_reason` null.
+       - If it does NOT fit: `viz.applies = false` and write ONE polite
+         sentence in `viz.applies_reason` explaining why and what would
+         work better — e.g. "A pie chart needs a small number of slices;
+         the result will have ~200 kebeles. A bar chart or map would read
+         better."
+
+  B. **If the user did NOT name any viz**, pick the type that best fits the
+     result shape:
+       - single metric              → metric_card
+       - count by 1 categorical     → pie if ≤ 8 distinct values, else bar
+       - 2 numeric columns          → scatter
+       - over time                  → line
+       - distribution               → histogram
+       - geographic                 → map
+     Set `viz.user_requested = false`, `viz.applies = true`.
+
+  C. ALWAYS set a short, human-readable `viz.title`.
 
 You MUST call exactly one tool per turn. Do not respond with free-form text.
 """
@@ -96,12 +135,24 @@ INTENT_TOOL_SCHEMA = {
             "viz": {
                 "type": "object",
                 "properties": {
-                    "type":   {"type": "string"},
+                    "type":   {"type": "string", "description": "metric_card | bar | line | pie | donut | histogram | scatter | map | table"},
                     "x":      {"type": "string"},
                     "y":      {"type": "string"},
                     "series": {"type": "string"},
                     "title":  {"type": "string"},
                     "extra":  {"type": "object"},
+                    "user_requested": {
+                        "type": "boolean",
+                        "description": "TRUE only when the user explicitly named this viz type in their question.",
+                    },
+                    "applies": {
+                        "type": "boolean",
+                        "description": "Whether this viz type fits the data this query will return. See VISUALISATION RULES in the system prompt.",
+                    },
+                    "applies_reason": {
+                        "type": "string",
+                        "description": "Required ONLY when applies=false. One polite sentence explaining why and what would work better.",
+                    },
                 },
             },
             "assumptions": {"type": "array", "items": {"type": "string"}},

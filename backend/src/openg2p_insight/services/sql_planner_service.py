@@ -70,7 +70,7 @@ class SqlPlannerService(BaseService):
         select_clause, has_k_count = self._select_clause(intent)
         where_clause, params = self._where_clause(intent.filters, placeholder_map)
         group_clause = self._group_clause(intent.group_by)
-        order_clause = self._order_clause(intent.order_by)
+        order_clause = self._order_clause(intent.order_by, metric=intent.metric)
         limit_clause = f"LIMIT {int(intent.limit)}" if intent.limit else ""
 
         sql = " ".join(
@@ -169,13 +169,37 @@ class SqlPlannerService(BaseService):
         return "GROUP BY " + ", ".join(SqlPlannerService._safe_ident(c) for c in group_by)
 
     @staticmethod
-    def _order_clause(order_by: List[str]) -> str:
+    def _order_clause(order_by: List[str], metric: str = "count") -> str:
+        """Render ORDER BY, normalising LLM-emitted metric names to our SELECT
+        aliases. The planner aliases the metric as `total` (for count) or
+        `metric_value` (for sum/avg/min/max), but the LLM tends to refer to
+        it by natural names — `count`, `value`, `metric`. We translate those
+        rather than reject the query."""
         if not order_by:
             return ""
-        safe = [SqlPlannerService._safe_ident(c.split()[0]) +
-                (" DESC" if c.lower().endswith(" desc") else "")
-                for c in order_by]
-        return "ORDER BY " + ", ".join(safe)
+        # Build the alias the metric was projected under.
+        metric_alias = "total" if metric == "count" else "metric_value"
+        # Names the LLM might use to mean "order by the aggregate value".
+        natural_metric_aliases = {
+            "count", "counts", "n", "total", "totals",
+            "metric", "metric_value", "value", "values", "aggregate",
+            "sum", "avg", "average", "min", "max", "mean",
+        }
+
+        parts: List[str] = []
+        for raw in order_by:
+            tokens = raw.strip().split()
+            if not tokens:
+                continue
+            col = tokens[0]
+            direction = ""
+            if len(tokens) > 1 and tokens[1].lower() in ("asc", "desc"):
+                direction = " " + tokens[1].upper()
+            if col.lower() in natural_metric_aliases:
+                parts.append(metric_alias + direction)
+            else:
+                parts.append(SqlPlannerService._safe_ident(col) + direction)
+        return "ORDER BY " + ", ".join(parts) if parts else ""
 
     @staticmethod
     def _safe_ident(ident: str) -> str:

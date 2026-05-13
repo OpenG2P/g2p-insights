@@ -111,6 +111,47 @@ def test_unsafe_identifier_rejected():
         svc.build(intent, placeholder_map={})
 
 
+def test_order_by_count_is_normalised_to_total_alias():
+    """LLMs naturally emit ORDER BY count DESC; the planner aliases COUNT(*)
+    as `total`, so without normalisation Postgres errors with 'column count
+    does not exist'."""
+    svc = _svc_with_catalog(["mv_individuals_summary"])
+    intent = Intent(
+        entity="mv_individuals_summary",
+        metric="count",
+        group_by=["region_code"],
+        order_by=["count DESC"],
+    )
+    planned = svc.build(intent, placeholder_map={})
+    assert "ORDER BY total DESC" in planned.sql
+    assert "count DESC" not in planned.sql.lower().replace("count(", "")
+
+
+def test_order_by_avg_metric_uses_metric_value_alias():
+    svc = _svc_with_catalog(["mv_individuals_summary"])
+    intent = Intent(
+        entity="mv_individuals_summary",
+        metric="avg",
+        metric_column="pmt_score",
+        group_by=["region_code"],
+        order_by=["avg DESC"],
+    )
+    planned = svc.build(intent, placeholder_map={})
+    assert "ORDER BY metric_value DESC" in planned.sql
+
+
+def test_order_by_real_column_passes_through():
+    svc = _svc_with_catalog(["mv_individuals_summary"])
+    intent = Intent(
+        entity="mv_individuals_summary",
+        metric="count",
+        group_by=["region_code"],
+        order_by=["region_code ASC"],
+    )
+    planned = svc.build(intent, placeholder_map={})
+    assert "ORDER BY region_code ASC" in planned.sql
+
+
 def test_placeholder_re_injection():
     svc = _svc_with_catalog(["mv_individuals_summary"])
     intent = Intent(

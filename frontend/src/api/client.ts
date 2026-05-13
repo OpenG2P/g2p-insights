@@ -30,6 +30,12 @@ export interface VizSpec {
   series?: string;
   title?: string;
   extra?: Record<string, unknown>;
+  /** TRUE only when the user explicitly named this viz type. */
+  user_requested?: boolean;
+  /** Whether this viz type fits the data the query will return. */
+  applies?: boolean;
+  /** Populated when applies=false — one polite sentence + suggestion. */
+  applies_reason?: string | null;
 }
 
 export interface Cost {

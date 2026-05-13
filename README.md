@@ -29,6 +29,7 @@ Built to be deployed per-country into the existing OpenG2P Kubernetes stack alon
 13. [Deployment — Docker, Helm, Kubernetes](#13-deployment--docker-helm-kubernetes)
 14. [Configuration](#14-configuration)
 15. [Audit and observability](#15-audit-and-observability)
+15a. [LLM choice and open-source alternatives](#15a-llm-choice-and-open-source-alternatives)
 16. [Roadmap](#16-roadmap)
 17. [Open items](#17-open-items)
 
@@ -832,6 +833,95 @@ insightFrontend:
 - OpenTelemetry traces span PII → schema → LLM → planner → cost → exec → response.
 - A built-in observability dashboard (created via the platform itself) shows queries/day, rejection reasons, slowest queries, top users.
 - Post-MVP: emit CloudEvents to `openg2p-audit-manager` matching its existing schema.
+
+---
+
+## 15a. LLM choice and open-source alternatives
+
+MVP runs against **Anthropic Claude**. For air-gapped deployments — and as a cost lever in cloud deployments — several open-source models do this workload reasonably well. This section captures the evaluation so future deployments can swap without re-scoping.
+
+### What the LLM here actually needs to be good at
+
+| Capability | Where it shows up in our code |
+|------------|------------------------------|
+| Tool-use / structured JSON output | Must pick exactly one of `propose_intent` / `request_clarification` and fill the schema |
+| Reading a catalog and grounding in it | Use only allow-listed tables, declared enum values, real column names |
+| Multi-turn reasoning | Carry the clarification thread, refine the Intent across turns |
+| Following negative rules | "Don't invent values like `FEMALE` when enum is `{M,F,O}`" |
+| Knowing when to ask | Tell ambiguous from clear; ask one targeted clarification rather than guessing |
+
+The model does **not** need vision, code execution, long-context retrieval, or creative writing. The narrow profile means a 70B-class open model is usually enough.
+
+### Top open candidates (as of early 2026)
+
+| Model | Size | Tool use | Schema-grounding | Multi-turn | Notes |
+|-------|------|----------|------------------|-----------|-------|
+| **Qwen 2.5 72B Instruct** | 72B | ★★★★ | ★★★★ | ★★★ | Top pick. Apache 2.0. Native function calling. Strong multilingual (relevant for OpenG2P) |
+| **Llama 3.3 70B Instruct** | 70B | ★★★★ | ★★★★ | ★★★ | Mature, well-supported by vLLM. Meta Llama Community License |
+| **DeepSeek V3** | 671B MoE (~37B active) | ★★★★ | ★★★★ | ★★★★ | Frontier-level reasoning. Open weights. Heavy to host but cheap inference per token |
+| **Mistral Small 3 24B** | 24B | ★★★ | ★★★ | ★★ | Smaller, fast. Good budget option |
+| **Qwen 2.5 32B Coder** | 32B | ★★★ | ★★★★ | ★★ | Surprisingly strong at SQL-shaped tasks; weaker at clarification |
+| SQLCoder-70B (Defog) | 70B | ★★ | ★★★★★ | ★ | SQL specialist; clarification flow doesn't work — would need external orchestration |
+| Gemma 2 27B | 27B | ★★ | ★★★ | ★★ | Decent; tool-use less polished |
+
+★ ratings are estimates for *this specific workload*, not general benchmarks.
+
+### Recommended stack for OpenG2P deployments
+
+1. **First choice — Qwen 2.5 72B Instruct.** Apache 2.0, native function-calling format that's OpenAI-compatible (so our `INTENT_TOOL_SCHEMA` works almost as-is), strong multilingual. Has a 32B sibling for environments that can't host 72B — same prompt usually transfers.
+
+2. **Alternative — Llama 3.3 70B Instruct.** Equally capable, more mature ecosystem (better vLLM optimisation, more community tooling).
+
+3. **Serving stack — vLLM.** OpenAI-compatible tool-use API. Means we swap Anthropic for an OpenAI client and point at our vLLM endpoint with minimal code changes.
+
+**Hardware:** 72B/70B needs ~2× A100 80GB or 2× H100 80GB for decent throughput. Single A100 80GB for the 32B variants.
+
+### Code changes needed to swap LLM providers
+
+The LLM service is already abstracted. The change set is small:
+
+1. **`config.py`** — extend `LlmConfig.provider` from `Literal["anthropic"]` to `Literal["anthropic", "openai_compatible"]`. Add `LlmConfig.base_url`.
+
+2. **`services/llm_service.py`** — branch the client init:
+   ```python
+   if _config.llm.provider == "openai_compatible":
+       from openai import AsyncOpenAI
+       self._client = AsyncOpenAI(base_url=_config.llm.base_url, api_key="not-needed")
+   else:  # anthropic
+       from anthropic import AsyncAnthropic
+       self._client = AsyncAnthropic(api_key=...)
+   ```
+   …then translate the tool-call shape (OpenAI uses `{type:"function", function:{...}}`; Claude uses `{type:"tool_use", name:...}`). ~30 lines.
+
+3. **Helm** — values pivot from `anthropicApiKeySecret` to `llmBaseUrl` + a Service for the vLLM deployment in the same cluster (or out-of-cluster URL).
+
+System prompt usually needs minor tightening when moving from Claude to open models — they're less forgiving of ambiguous instructions. Run the integration smoke against both and tune.
+
+### Realistic tradeoffs vs Claude
+
+| Aspect | Claude Opus 4.7 | Qwen 2.5 72B / Llama 3.3 70B |
+|--------|----------------|------------------------------|
+| Knows when to clarify | Excellent | Good — sometimes over-clarifies or commits when it shouldn't |
+| Respects negative rules ("don't invent enum values") | Reliable | Mostly reliable; planner-side validator catches the rest |
+| Multi-turn coherence over 4+ turns | Excellent | Good — occasionally loses thread |
+| SQL correctness on materialised views | Excellent | Very good |
+| SQL correctness on novel joins | Excellent | Weaker |
+| Inference cost | ~$15/M output tokens | Hardware cost only — free at the margin |
+| Air-gapped | No | Yes ✓ |
+| Hardware | Just API | 2× A100/H100 |
+| First-token latency | ~300ms | 50–200ms (local network) |
+| Throughput | API-limited | Limited by GPU count |
+
+The protections we built — cost gate, planner enum validation, allow-listed views, k-anonymity, clarification routing — compensate for the small intelligence gap. The biggest practical hit is **more clarification turns**: a question Claude would commit on, Qwen might ask about. That's a UX trade, not a correctness one.
+
+### Implementation timeline
+
+Tracked in §16 as roadmap item 6 (Air-gapped LLM). The recommended order:
+1. Add the `openai_compatible` branch in `LlmService` so the switch is one config flag away.
+2. Stand up a vLLM endpoint serving Qwen 2.5 72B (test box first).
+3. Run the integration smoke + a 20-question evaluation set against both Claude and Qwen.
+4. Tune the system prompt for the gap.
+5. Cut over per-deployment via Helm values.
 
 ---
 

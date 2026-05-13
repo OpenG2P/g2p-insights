@@ -50,6 +50,14 @@ class VizSpec(BaseModel):
     title: Optional[str] = None
     extra: dict = Field(default_factory=dict)
 
+    # Did the user's question explicitly request this viz type?
+    user_requested: bool = False
+    # Does this viz type sensibly fit the data the query will return?
+    # When False, the UI shows a polite "this viz doesn't fit because…" notice
+    # and renders the data as a table instead.
+    applies: bool = True
+    applies_reason: Optional[str] = None
+
 
 class Intent(BaseModel):
     kind: Literal["intent"] = "intent"
