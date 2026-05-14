@@ -27,10 +27,18 @@ export default function AutoChart({ vizSpec, rows }: Props) {
   if (type === "metric_card" || (rows.length === 1 && cols.length === 1)) {
     const onlyCol = cols[0];
     const val = rows[0][onlyCol];
-    return (
+    const num = toNumber(val);
+    return num !== null ? (
       <Statistic
         title={title || onlyCol}
-        value={typeof val === "number" || typeof val === "string" ? val : String(val)}
+        value={num}
+        precision={precisionFor(num)}
+        valueStyle={{ color: palette.black, fontFamily: '"Roboto Slab", serif', fontSize: 36 }}
+      />
+    ) : (
+      <Statistic
+        title={title || onlyCol}
+        value={String(val)}
         valueStyle={{ color: palette.black, fontFamily: '"Roboto Slab", serif', fontSize: 36 }}
       />
     );
@@ -142,7 +150,12 @@ export default function AutoChart({ vizSpec, rows }: Props) {
     <Table
       size="small"
       dataSource={rows.map((r, i) => ({ key: i, ...r }))}
-      columns={cols.map((c) => ({ title: c, dataIndex: c, key: c }))}
+      columns={cols.map((c) => ({
+        title: c,
+        dataIndex: c,
+        key: c,
+        render: (v: unknown) => formatCell(v),
+      }))}
       pagination={{ pageSize: 20 }}
     />
   );
@@ -154,4 +167,35 @@ function guessNumericCol(sample: Record<string, unknown>, exclude: string[]): st
     if (typeof v === "number") return k;
   }
   return undefined;
+}
+
+/**
+ * Coerce a value to a finite number, or null if it isn't representable as one.
+ * Postgres NUMERIC columns serialise as strings ("4.6962598425196850") so we
+ * need to recognise numeric strings as numbers for rendering purposes.
+ */
+function toNumber(v: unknown): number | null {
+  if (v === null || v === undefined || v === "") return null;
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v === "boolean") return null;
+  if (typeof v === "string") {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+/** How many decimals to show for a given number. */
+function precisionFor(n: number): number {
+  if (!Number.isFinite(n)) return 0;
+  if (Number.isInteger(n)) return 0;
+  return Math.abs(n) >= 1 ? 2 : 4;
+}
+
+/** Render a table cell. Numbers get rounded; everything else passes through. */
+function formatCell(v: unknown): string {
+  const num = toNumber(v);
+  if (num === null) return v === null || v === undefined ? "" : String(v);
+  const p = precisionFor(num);
+  return p === 0 ? num.toLocaleString() : num.toFixed(p);
 }

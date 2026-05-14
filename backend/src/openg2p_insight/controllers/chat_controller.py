@@ -390,11 +390,11 @@ def _summarise_result(intent: Intent, sql_text: str, rows: list[dict]) -> str:
     if not rows:
         head = "(no rows)"
     elif len(rows) == 1:
-        head = ", ".join(f"{k}={v}" for k, v in list(rows[0].items())[:4])
+        head = ", ".join(f"{k}={_fmt_value(v)}" for k, v in list(rows[0].items())[:4])
     else:
         first = rows[0]
         head = (
-            ", ".join(f"{k}={v}" for k, v in list(first.items())[:3])
+            ", ".join(f"{k}={_fmt_value(v)}" for k, v in list(first.items())[:3])
             + f" … ({len(rows)} rows)"
         )
 
@@ -402,3 +402,25 @@ def _summarise_result(intent: Intent, sql_text: str, rows: list[dict]) -> str:
         f"Computed {metric_label} from {intent.entity}{grouped}{filt}. "
         f"Result: {head}."
     )
+
+
+def _fmt_value(v):
+    """Round floats / Decimals to a sensible precision for display + LLM
+    context. Postgres NUMERIC arithmetic preserves arbitrary precision —
+    AVG of integers easily comes back as 4.6962598425196850, which is
+    unreadable. Counts stay whole."""
+    import decimal
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, int):
+        return v
+    if isinstance(v, (float, decimal.Decimal)):
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return v
+        if f == int(f):
+            return int(f)
+        # 2 decimals for normal-sized numbers; 4 decimals for very small fractions.
+        return f"{f:.2f}" if abs(f) >= 1 else f"{f:.4f}"
+    return v
