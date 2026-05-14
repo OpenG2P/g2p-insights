@@ -36,7 +36,12 @@ _VIZ_TO_SUPERSET = {
 class SupersetService(BaseService):
     def __init__(self, name: str = ""):
         super().__init__(name)
-        self._token: Optional[str] = None
+        # Session cookies from form-based login. We tried JWT Bearer auth via
+        # /api/v1/security/login but in Superset 4.x the JWT-authenticated
+        # request is silently demoted to anonymous on list endpoints (every
+        # `/api/v1/{resource}/` returns count=0 with a valid admin JWT,
+        # while /api/v1/me/ returns 401). Form-login + cookie works.
+        self._cookies: Optional[dict] = None
 
     # ---------- public API ---------------------------------------------------
 
@@ -70,7 +75,8 @@ class SupersetService(BaseService):
             }
             r = await client.post(
                 "/api/v1/chart/",
-                headers={**self._auth_header(), "X-CSRFToken": await self._csrf(client)},
+                cookies=self._cookies,
+                headers={"X-CSRFToken": await self._csrf(client), "Referer": _config.superset.url},
                 json=payload,
             )
             if r.status_code >= 400:
@@ -84,7 +90,8 @@ class SupersetService(BaseService):
         async with httpx.AsyncClient(base_url=_config.superset.url) as client:
             r = await client.put(
                 f"/api/v1/dashboard/{dashboard_id}",
-                headers={**self._auth_header(), "X-CSRFToken": await self._csrf(client)},
+                cookies=self._cookies,
+                headers={"X-CSRFToken": await self._csrf(client), "Referer": _config.superset.url},
                 json={"slices": [chart_id]},
             )
             if r.status_code >= 400:
@@ -95,34 +102,132 @@ class SupersetService(BaseService):
     # ---------- internals ----------------------------------------------------
 
     async def _ensure_auth(self) -> None:
-        if self._token:
+        if self._cookies:
             return
-        async with httpx.AsyncClient(base_url=_config.superset.url) as client:
+        async with httpx.AsyncClient(base_url=_config.superset.url, follow_redirects=False) as client:
             r = await client.post(
-                "/api/v1/security/login",
-                json={
+                "/login/",
+                data={
                     "username": _config.superset.username,
                     "password": _config.superset.password,
-                    "provider": _config.superset.auth_provider,
-                    "refresh": True,
                 },
             )
-            r.raise_for_status()
-            self._token = r.json()["access_token"]
-
-    def _auth_header(self) -> dict:
-        return {"Authorization": f"Bearer {self._token}"} if self._token else {}
+            # FAB returns 302 on success, 200 on failure (re-rendered login).
+            if r.status_code != 302:
+                raise RuntimeError(f"Superset login failed: {r.status_code}")
+            self._cookies = dict(r.cookies)
 
     async def _csrf(self, client: httpx.AsyncClient) -> str:
-        r = await client.get("/api/v1/security/csrf_token/", headers=self._auth_header())
+        r = await client.get("/api/v1/security/csrf_token/", cookies=self._cookies)
         if r.status_code >= 400:
             return ""
         return r.json().get("result", "")
 
+    # ---------- embedding API -----------------------------------------------
+
+    async def list_dashboards(self) -> list[dict]:
+        """Return dashboards visible to the service account, including their
+        embedded-UUID if embedding has been enabled. We list every dashboard;
+        embed-status is shown so the UI can render "go to Superset to enable
+        embedding" for ones that aren't yet embeddable."""
+        await self._ensure_auth()
+        async with httpx.AsyncClient(base_url=_config.superset.url) as client:
+            r = await client.get(
+                "/api/v1/dashboard/",
+                cookies=self._cookies,
+                params={"q": "(page_size:200)"},
+            )
+            r.raise_for_status()
+            dashboards = r.json().get("result", [])
+
+            out: list[dict] = []
+            for d in dashboards:
+                embedded_uuid = await self._get_embedded_uuid(d["id"], client)
+                out.append({
+                    "id": d["id"],
+                    "uuid": d.get("uuid"),
+                    "title": d.get("dashboard_title") or d.get("slug") or f"Dashboard {d['id']}",
+                    "slug": d.get("url_slug"),
+                    "status": d.get("status", "published"),
+                    "embedded_uuid": embedded_uuid,
+                    "changed_on": d.get("changed_on_delta_humanized"),
+                })
+            return out
+
+    async def _get_embedded_uuid(
+        self, dashboard_id: int, client: httpx.AsyncClient
+    ) -> str | None:
+        """Look up the embedded-UUID for a dashboard. Returns None if embedding
+        hasn't been enabled."""
+        r = await client.get(
+            f"/api/v1/dashboard/{dashboard_id}/embedded",
+            cookies=self._cookies,
+        )
+        if r.status_code == 404:
+            return None
+        if r.status_code >= 400:
+            return None
+        return r.json().get("result", {}).get("uuid")
+
+    async def enable_embedding(
+        self, dashboard_id: int, allowed_domains: list[str] | None = None
+    ) -> str:
+        """Toggle embedding on for a dashboard. Returns the embedded-UUID
+        used by the SDK on the frontend."""
+        await self._ensure_auth()
+        async with httpx.AsyncClient(base_url=_config.superset.url) as client:
+            r = await client.post(
+                f"/api/v1/dashboard/{dashboard_id}/embedded",
+                cookies=self._cookies,
+                headers={"X-CSRFToken": await self._csrf(client), "Referer": _config.superset.url},
+                json={"allowed_domains": allowed_domains or []},
+            )
+            if r.status_code >= 400:
+                raise RuntimeError(f"Superset enable-embedding {r.status_code}: {r.text}")
+            return r.json()["result"]["uuid"]
+
+    async def mint_guest_token(
+        self,
+        embedded_uuid: str,
+        user_info: dict | None = None,
+        rls_rules: list[dict] | None = None,
+    ) -> str:
+        """Mint a short-lived guest token scoped to a single embedded dashboard.
+
+        The SDK calls our /embed-token endpoint, which in turn calls this.
+        The token expires after a few minutes — the SDK auto-refreshes.
+
+        `rls_rules` is the place to enforce per-user row-level scoping when
+        Keycloak integration lands (e.g. {clause: "region_code = 'ET-OR'"}).
+        Empty by default — every guest sees everything in the dashboard.
+        """
+        await self._ensure_auth()
+        body = {
+            "user": user_info or {
+                "username": "insight-embed-guest",
+                "first_name": "Insight",
+                "last_name": "Embed",
+            },
+            "resources": [{"type": "dashboard", "id": embedded_uuid}],
+            "rls": rls_rules or [],
+        }
+        async with httpx.AsyncClient(base_url=_config.superset.url) as client:
+            r = await client.post(
+                "/api/v1/security/guest_token/",
+                cookies=self._cookies,
+                headers={"X-CSRFToken": await self._csrf(client), "Referer": _config.superset.url},
+                json=body,
+            )
+            if r.status_code >= 400:
+                raise RuntimeError(f"Superset guest_token {r.status_code}: {r.text}")
+            return r.json()["token"]
+
+    # ---------- internals (chart authoring) ---------------------------------
+
     async def _resolve_dataset_id(self, dataset: str, client: httpx.AsyncClient) -> int:
         r = await client.get(
             "/api/v1/dataset/",
-            headers=self._auth_header(),
+            cookies=self._cookies,
             params={"q": f'(filters:!((col:table_name,opr:eq,value:{dataset})))'},
         )
         r.raise_for_status()
