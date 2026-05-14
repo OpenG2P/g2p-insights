@@ -31,13 +31,18 @@ export default function Ask() {
   const [err, setErr] = useState<string | null>(null);
   const [followUp, setFollowUp] = useState("");
 
+  // sessionId is sticky across questions so follow-ups carry context to the
+  // LLM. Cleared only on "New question" / reset.
+  const [sessionId, setSessionId] = useState<string | null>(null);
+
   const submitNew = async () => {
     setLoading(true);
     setErr(null);
-    setResp(null);
     try {
-      const r = await ask({ question: q });
+      const r = await ask({ question: q, session_id: sessionId || undefined });
       setResp(r);
+      setSessionId(r.session_id);
+      setQ("");  // clear input so the user can type the follow-up
     } catch (e) {
       setErr(String(e));
     } finally {
@@ -52,6 +57,7 @@ export default function Ask() {
     try {
       const r = await clarify({ session_id: resp.session_id, ...payload });
       setResp(r);
+      setSessionId(r.session_id);
       setFollowUp("");
     } catch (e) {
       setErr(String(e));
@@ -62,6 +68,7 @@ export default function Ask() {
 
   const reset = () => {
     setResp(null);
+    setSessionId(null);
     setQ("");
     setFollowUp("");
     setErr(null);
@@ -81,26 +88,35 @@ export default function Ask() {
         </Card>
       )}
 
-      {/* Input area */}
-      {!resp || resp.status === "ok" || resp.status === "rejected" || resp.status === "needs_confirmation" ? (
-        <Card>
-          <Space direction="vertical" style={{ width: "100%" }}>
-            <TextArea
-              rows={3}
-              placeholder="e.g. Women in Oromia with low income, grouped by woreda"
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              disabled={loading}
-            />
-            <Space>
-              <Button type="primary" loading={loading} onClick={submitNew} disabled={!q.trim()}>
-                Ask
+      {/* Input area — always present so the user can ask a follow-up or
+          pivot to a new question without getting stuck inside the
+          clarification flow. The placeholder hints at follow-ups when a
+          conversation is already going. */}
+      <Card>
+        <Space direction="vertical" style={{ width: "100%" }}>
+          <TextArea
+            rows={3}
+            placeholder={
+              sessionId
+                ? "Follow-up (e.g. 'and of men?') — or type a fresh question and click New question to clear context"
+                : "e.g. Women in Oromia with low income, grouped by woreda"
+            }
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            disabled={loading}
+          />
+          <Space wrap>
+            <Button type="primary" loading={loading} onClick={submitNew} disabled={!q.trim()}>
+              {sessionId ? "Send follow-up" : "Ask"}
+            </Button>
+            {sessionId && (
+              <Button onClick={reset} disabled={loading}>
+                New question (clear conversation)
               </Button>
-              {resp && <Button onClick={reset} disabled={loading}>New question</Button>}
-            </Space>
+            )}
           </Space>
-        </Card>
-      ) : null}
+        </Space>
+      </Card>
 
       {/* Clarification picker */}
       {resp?.status === "needs_clarification" && resp.clarification && (
@@ -143,6 +159,12 @@ export default function Ask() {
                 </Button>
               </Space.Compact>
             )}
+            {/* Escape hatch — let the user abandon the clarification and
+                start fresh. Without this they're trapped until they pick an
+                option or type something. */}
+            <Button type="link" size="small" onClick={reset} disabled={loading} style={{ padding: 0 }}>
+              ← Start over with a new question
+            </Button>
           </Space>
         </Card>
       )}
@@ -186,14 +208,40 @@ export default function Ask() {
         />
       )}
 
+      {/* Direct answer to a meta-question (no SQL). The LLM answered from
+          schema/system info already in its prompt. */}
+      {resp?.status === "direct_answer" && resp.direct_answer && (
+        <Card>
+          <div style={{ whiteSpace: "pre-wrap", fontFamily: '"Roboto", sans-serif' }}>
+            {resp.direct_answer.answer}
+          </div>
+          <Tag style={{ marginTop: 12, background: palette.lightGrey }}>
+            answered from: {resp.direct_answer.source}
+          </Tag>
+        </Card>
+      )}
+
       {/* Expert-lab redirect — LLM detected a statistical question that
           our aggregation-only Intent can't express. */}
       {resp?.status === "expert_redirect" && resp.expert_redirect && (
         <Alert
           type="info"
           showIcon
-          message="This question needs statistical analysis"
-          description={resp.expert_redirect.explanation}
+          message={`I'll route this to Expert Lab → ${resp.expert_redirect.function}`}
+          description={
+            <div>
+              <div style={{ whiteSpace: "pre-wrap", marginBottom: 8 }}>
+                {resp.expert_redirect.explanation}
+              </div>
+              <div style={{ fontSize: 12, color: palette.black, opacity: 0.7 }}>
+                <b>Function:</b> {resp.expert_redirect.function} &nbsp;·&nbsp;
+                <b>Parameters:</b>{" "}
+                {Object.entries(resp.expert_redirect.suggested_params)
+                  .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+                  .join(", ") || "(none)"}
+              </div>
+            </div>
+          }
           action={
             <Button
               type="primary"

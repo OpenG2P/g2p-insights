@@ -7,7 +7,7 @@ from typing import Any, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 from ..services.cost_gate_service import CostReport
-from ..services.llm_service import Clarification, ExpertRedirect, VizSpec
+from ..services.llm_service import Clarification, DirectAnswer, ExpertRedirect, VizSpec
 from ..services.pii_service import PiiRedaction
 
 
@@ -41,6 +41,7 @@ ResponseStatus = Literal[
     "needs_confirmation",  # YELLOW cost; user must confirm
     "rejected",            # RED cost — won't run
     "expert_redirect",     # question needs statistical analysis; use Expert Lab
+    "direct_answer",       # LLM answered a meta-question directly (no SQL)
 ]
 
 
@@ -55,6 +56,10 @@ class AskResponse(BaseModel):
     # The frontend renders a card with a button that deep-links to the
     # Expert Lab page with the function + params pre-filled.
     expert_redirect: Optional[ExpertRedirect] = None
+
+    # Direct answer to a meta-question about the system (present only when
+    # status == "direct_answer"). No SQL, no rows — just text.
+    direct_answer: Optional[DirectAnswer] = None
 
     # Always present once intent is committed — the user can inspect the SQL
     # at any time. We DO NOT block on user approval; the cost gate decides

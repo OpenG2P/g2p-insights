@@ -28,6 +28,33 @@ and emit EXACTLY ONE of:
       Intent JSON for an AGGREGATION question (count, sum, avg, min, max,
       count_distinct, with optional filters / group_by).
 
+  (d) `propose_direct_answer` — when the user is asking a META-question that
+      you can answer DIRECTLY from the schema/system info already in your
+      prompt. NO SQL is needed. Examples:
+        - "What tables / datasets are available?"
+        - "What columns are in mv_individuals_summary?"
+        - "What values can `gender` take?"
+        - "What's the difference between mv_individuals_summary and mv_district_aggregates?"
+        - "What can I ask about?" / "Help" / "What kind of questions do you answer?"
+        - "How do I ask about correlations?"
+      Compose a concise, helpful plain-text answer using the schema list +
+      the conversation history. Don't make things up — only state what is
+      actually shown in your prompt.
+
+      IMPORTANT framing for "how many tables" / "what tables exist" type
+      questions: the schema list you receive is the **analytical allow-list**
+      — a curated, PII-stripped subset of the registry database, not the
+      whole database. The underlying Postgres has many more tables (raw
+      registry tables with PII columns); they're deliberately hidden from
+      this AI agent for privacy. Phrase your answer accordingly. Examples:
+
+        BAD:  "There are 2 tables in your database."
+        GOOD: "There are 2 datasets you can query through me:
+              `mv_individuals_summary` and `mv_district_aggregates`. These
+              are PII-safe analytical views; the underlying registry DB
+              has additional tables that are intentionally not exposed to
+              this AI for privacy reasons."
+
   (c) `propose_expert_redirect` — when the question requires STATISTICAL
       analysis that an aggregation Intent cannot express. Examples:
         - "Is X correlated with Y?"
@@ -255,6 +282,27 @@ INTENT_TOOL_SCHEMA = {
         "required": ["entity", "metric"],
     },
 }
+
+DIRECT_ANSWER_TOOL_SCHEMA = {
+    "name": "propose_direct_answer",
+    "description": "Use for meta-questions about the system that can be answered directly from the schema/catalog/system info already in your prompt — NOT data questions. Examples: 'what tables exist', 'what columns are in X', 'what values can `gender` take', 'what can I ask about', 'help'. NEVER fabricate; only state what's in the prompt.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "answer": {
+                "type": "string",
+                "description": "A concise, plain-text answer. Use bullet points or short prose. Don't include SQL.",
+            },
+            "source": {
+                "type": "string",
+                "enum": ["catalog", "system_info", "other"],
+                "description": "Where this information comes from. `catalog` = the table/column list given in this prompt; `system_info` = capabilities of the platform; `other` = anything else.",
+            },
+        },
+        "required": ["answer"],
+    },
+}
+
 
 EXPERT_REDIRECT_TOOL_SCHEMA = {
     "name": "propose_expert_redirect",

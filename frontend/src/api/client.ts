@@ -12,13 +12,20 @@ export type AskStatus =
   | "needs_clarification"
   | "needs_confirmation"
   | "rejected"
-  | "expert_redirect";
+  | "expert_redirect"
+  | "direct_answer";
 
 export interface ExpertRedirect {
   kind: "expert_redirect";
   function: string;
   suggested_params: Record<string, unknown>;
   explanation: string;
+}
+
+export interface DirectAnswer {
+  kind: "direct_answer";
+  answer: string;
+  source: "catalog" | "system_info" | "other";
 }
 
 export interface ClarifyOption { id: string; label: string; description?: string }
@@ -75,6 +82,7 @@ export interface AskResponse {
   session_id: string;
   clarification?: Clarification | null;
   expert_redirect?: ExpertRedirect | null;
+  direct_answer?: DirectAnswer | null;
   sql?: string | null;
   cost?: Cost | null;
   rows: Record<string, unknown>[];

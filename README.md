@@ -284,6 +284,18 @@ g2p-insight/
 
 ## 5. Schema catalog — generation and structure
 
+> **Onboarding a new registry?**
+> - **Automated** — use the `insight-onboard` CLI:
+>   [docs/insight-onboard.md](docs/insight-onboard.md). Three commands
+>   (`scan` / `apply` / `audit`) take a fresh registry DB to a deployed
+>   catalog in ~30 minutes. The human reviews a single proposal YAML.
+> - **Manual** — the DBA runbook:
+>   [docs/onboarding-new-registry.md](docs/onboarding-new-registry.md) —
+>   7 steps with copy-pasteable SQL/YAML.
+>
+> This section covers the catalog *format*; the runbook is the *recipe*;
+> the CLI is the *automation* over the recipe.
+
 ### Approach
 
 The schema catalog is the single source of truth that makes G2P Insight country-agnostic and registry-agnostic. The platform itself knows nothing about specific tables, columns, or PII semantics until the catalog is loaded.
@@ -401,84 +413,102 @@ The level hierarchy is **not hardcoded** — multiple countries can be onboarded
 
 ## 7. Core data flows
 
-### Flow A — Natural-language ad-hoc query (with clarifications)
+### Flow A — Natural-language ad-hoc query (conversational, four-tool routing)
 
-The LLM is given **two tools** and must call exactly one per turn:
-`request_clarification` (asks the user something) or `propose_intent`
-(commits to a query plan). The controller drives a multi-turn conversation,
-persisting state in `insight.chat_session` so the user can answer at their
-own pace.
+The LLM is given **four tools** and must call exactly one per turn. It is
+effectively a classifier over the user's question. Each tool maps to a
+distinct downstream pipeline; this is what keeps the system safe and
+testable instead of "ask an LLM to do anything".
+
+| Tool the LLM calls | What kind of question it handles | What the platform does next |
+|--------------------|----------------------------------|----------------------------|
+| `propose_intent` | Aggregation (count / sum / avg / count_distinct / min / max, with filters / group_by) | Build safe SQL → cost-gate → execute → return rows + viz |
+| `propose_expert_redirect` | Statistical analysis (group comparison, correlation, distribution, cross-tab) — anything that needs a real test, not an aggregate | Frontend renders a "Run in Expert Lab" card with the function + params pre-filled |
+| `propose_direct_answer` | **Meta-questions** the LLM can answer from the schema/system info already in its prompt — *"what tables exist?"*, *"what values can `gender` take?"*, *"help"* | Text answer rendered directly. No SQL, no executor, no cost gate. |
+| `request_clarification` | Ambiguous question — multiple plausible interpretations, missing scope, unmapped enum value, etc. | Frontend renders the question + 2-4 clickable options (and a free-text input). User answers, loop continues. |
+
+**The whole flow:**
 
 ```
-Turn 1 ── Browser → POST /ask {question}
+Turn 1 ── Browser → POST /ask {question, session_id?}
   │
   ├─ PiiService.sanitize(question)              (local, never network)
-  │   • Presidio + spaCy NER → placeholders
-  │   • Reverse map stored against session_id
+  │   • Presidio + spaCy NER → placeholders, reverse map per session
   │
-  ├─ SchemaService.retrieve_relevant(question)
-  │   • Local embedding model + pgvector
-  │   • FK-graph walk for join candidates
+  ├─ Build history = prior session.messages    (multi-turn conversation)
   │
-  ├─ LlmService.plan(sanitized, schemas, history=[])
-  │   • Claude tool-use loop
-  │   • Returns EITHER Intent OR Clarification
+  ├─ SchemaService.retrieve_relevant(question)  (keyword + future pgvector)
   │
-  ├─ if Clarification → persist + respond:
-  │     { status: "needs_clarification",
-  │       session_id, clarification: { question, options[], context },
-  │       messages: [...thread so far] }
-  │   The UI renders the question with clickable options (or a free-text
-  │   box). Loop continues at turn N below.
+  ├─ LlmService.plan(sanitized, schemas, history)
+  │   • LLM picks ONE of the four tools
+  │   • Returns Intent | Clarification | ExpertRedirect | DirectAnswer
   │
-  └─ if Intent → continue to planning ↓
+  ├─ dispatch on the result type:
+  │   • Clarification    → status="needs_clarification" (loop continues
+  │                        on /ask/clarify, full history forwarded)
+  │   • ExpertRedirect   → status="expert_redirect" {function, params,
+  │                        explanation} — frontend deep-links to Expert Lab
+  │   • DirectAnswer     → status="direct_answer" {answer, source} — rendered
+  │                        as plain text; no further pipeline runs
+  │   • Intent           → continue to planning ↓
 
-Turn N ── Browser → POST /ask/clarify {session_id, option_id | text}
-  │   • Appends the user's answer to insight.chat_session.messages
-  │   • LlmService.plan(sanitized, schemas, history=<full thread>)
-  │   • LLM may clarify again (rare) or commit to an Intent
-  │
-Commit ── once Intent is committed:
-  │
+Intent committed:
   ├─ SqlPlannerService.build(intent, placeholder_map)
-  │   • Allow-listed views/columns only
+  │   • Allow-listed views/columns only; enum values validated
   │   • Parameterised SQL; PII placeholders re-injected here
+  │   • ORDER BY aliases ("count","sum",...) normalised to actual SELECT alias
   │
-  ├─ CostGateService.assess(sql)
-  │   • Static + EXPLAIN  →  GREEN / YELLOW / RED
+  ├─ CostGateService.assess(sql)               (static + EXPLAIN)
+  │   • RED     → status="rejected"             (SQL still shown)
+  │   • YELLOW  → status="needs_confirmation"   (Run anyway button)
+  │   • GREEN   → execute immediately
   │
-  ├─ if RED     → respond status=rejected   (SQL still shown)
-  │  if YELLOW  → respond status=needs_confirmation (SQL shown; user clicks Run anyway)
-  │  if GREEN   → run immediately
-  │
-  ├─ QueryExecutorService.run(sql)   (insight_ai role, 30s timeout)
+  ├─ QueryExecutorService.run(sql)             (insight_ai role, 30s timeout)
   ├─ KAnonymity.apply(rows, group_by, k)
   ├─ AuditService.record(user, question, sql, cost, rows)
   │
-  └─ → { status: "ok", session_id, sql, cost, rows, viz_spec,
-         assumptions, pii_redactions, k_suppressions, messages }
+  └─ Append assistant-side summary to session.messages so the *next* turn
+     can reference this one ("computed avg(monthly_income) WHERE gender='F'.
+     Result: total=2840."). This is what makes "and of men?" work.
 ```
 
-**SQL visibility — always on, never blocking.**
-Every response that has reached the planning stage carries the generated
-SQL in `sql`. The UI shows it in an inline panel (collapsed for GREEN,
-expanded for YELLOW / RED). We do **not** wait for the user to approve the
-SQL before running — the cost gate makes that decision. The intent is to
-make the system reviewable, not to slow down the analyst.
+**Conversational follow-ups.** The frontend keeps a sticky `session_id`
+across questions. The backend threads `session.messages` into the LLM
+prompt as history. The system prompt has a *"conversational continuity"*
+rule telling the model to interpret short follow-ups (*"and of men?"*,
+*"what about Tigray?"*) as **refinements** of the prior Intent — carry over
+entity, metric, and untouched filters. The UI shows a *"Send follow-up"*
+button when a conversation is going and an explicit *"New question (clear
+conversation)"* button to reset.
 
-**When the LLM asks for clarification.**
-Examples that trigger `request_clarification`:
-- "Show me women with low income in Oromia" → which `monthly_income`
+**Escape from clarification.** The clarification card includes a
+*"← Start over with a new question"* link so users never get trapped if
+they don't want to answer the LLM's question.
+
+**SQL visibility.** Every Intent-committed response carries the generated
+SQL. The UI shows it in a collapsible right-side panel. The user can always
+review it; we don't block on approval — the cost gate decides whether to
+run.
+
+**When the LLM asks for clarification.** Examples:
+- *"Show me women with low income in Oromia"* → which `monthly_income`
   (individual or household)? what threshold for "low"?
-- "Recent registrations" → what time window?
-- "Displaced households" → IDP, REFUGEE, RETURNEE, or any of those?
-- "Average PMT in Bahir Dar" → no geo code matches; the LLM offers the
+- *"Recent registrations"* → what time window?
+- *"Displaced households"* → IDP, REFUGEE, RETURNEE, or any of those?
+- *"Average PMT in Bahir Dar"* → no geo code matches; the LLM offers the
   closest zone or asks for the woreda.
-- Place name not in the cached MDS hierarchy → offer the closest matches.
 
-Options are returned as a list of `{id, label, description}`. The UI
-presents them as buttons; the user can also type a free-text answer when
-`free_text_allowed` is true (the default).
+**When the LLM redirects to Expert Lab.** Trigger words: *correlation*,
+*related*, *predict*, *significant*, *differ*, *distribution*, *spread*,
+*variance*, *association*. The redirect carries the function name and
+suggested parameters; the frontend deep-links into Expert Lab with those
+pre-filled via `sessionStorage`.
+
+**When the LLM answers directly.** Meta-questions about the system —
+*"what tables exist?"*, *"what columns are in mv_individuals_summary?"*,
+*"what can I ask about?"*, *"what enum values does gender take?"*. The
+LLM composes a plain-text answer from the schema/system info already in
+its prompt. No SQL.
 
 ### Flow B — NL-driven Superset chart authoring
 
@@ -543,6 +573,37 @@ Browser → POST /analytics/{function} {filters, params}
 ```
 
 The analytics layer is generic. PMT-score-distribution is one **example** registered function (`analysis_functions/distribution.py`) — the platform does not bake in PMT semantics; the function is parameterized over column name, bin count, fit family.
+
+#### Design philosophy: analysis primitives, not per-question functions
+
+The registry today is:
+
+| Primitive | Inputs | Answers |
+|-----------|--------|---------|
+| `distribution` | numeric column | histogram + percentiles + fitted distributions |
+| `group_compare` | numeric metric + categorical group | per-group stats + t-test / Welch / ANOVA / Mann-Whitney + Cohen's d + boxplot |
+| `correlation` | list of columns | correlation matrix (numeric × numeric, categoricals one-hot-encoded; high-cardinality columns skipped with a warning) |
+| `crosstab` | two categorical columns | contingency table + chi-square |
+
+These are **primitives**, not "one function per anticipated question". The
+goal is that the next ~3 primitives (`time_series`, `regression`, `summarize`)
+cover the long tail of analytical questions without code changes per
+question. When something doesn't fit a primitive, the answer is *another
+primitive* — not sandboxed code generation. Sandboxed Python is a v2
+option we don't need yet.
+
+#### Guards on every analysis call
+
+- **60-second wall-clock timeout** wrapped around every function in
+  `AnalyticsService.run()` via `asyncio.timeout()`. Plus the DB role's
+  30-second `statement_timeout` bounds the SQL extract.
+- **Default `sample_size`** per function (5k for correlation, 50k for
+  distribution / crosstab) — operators override per request.
+- **High-cardinality cap** in correlation: any categorical with > 30
+  distinct values is skipped (and called out in `assumptions`) to keep
+  `pd.get_dummies` tractable.
+- **Step-level logs** so a slow function shows you which step (extract /
+  encode / compute) is the bottleneck.
 
 ---
 
@@ -937,12 +998,30 @@ The protections we built — cost gate, planner enum validation, allow-listed vi
 
 ### Implementation timeline
 
-Tracked in §16 as roadmap item 6 (Air-gapped LLM). The recommended order:
-1. Add the `openai_compatible` branch in `LlmService` so the switch is one config flag away.
-2. Stand up a vLLM endpoint serving Qwen3-32B (test box first; fits 1× A6000).
-3. Run the integration smoke + a 20-question evaluation set against both Claude and Qwen.
-4. Tune the system prompt for the gap.
-5. Cut over per-deployment via Helm values.
+Tracked in §16 as roadmap item 6 (Air-gapped LLM).
+
+| # | Step | Status |
+|---|------|--------|
+| 1 | Add `openai_compatible` branch in `LlmService` so the switch is one config flag away | **Done.** `INSIGHT_LLM__PROVIDER`, `INSIGHT_LLM__BASE_URL`, `INSIGHT_LLM__API_KEY`, `INSIGHT_LLM__MODEL` flip between providers. Tested against OpenRouter for Qwen3-32B. |
+| 2 | Stand up a vLLM endpoint serving Qwen3-32B (test box first; fits 1× A6000) | Pending |
+| 3 | Run integration smoke + a 20-question evaluation set against both Claude and Qwen3 | Pending |
+| 4 | Tune the system prompt for the gap | Pending |
+| 5 | Cut over per-deployment via Helm values | Pending |
+
+**Switching providers today** is a single env-var edit:
+
+```bash
+# In backend/.env
+INSIGHT_LLM__PROVIDER=openai_compatible
+INSIGHT_LLM__BASE_URL=https://openrouter.ai/api/v1     # or your vLLM URL
+INSIGHT_LLM__API_KEY=<provider key>
+INSIGHT_LLM__MODEL=qwen/qwen3-32b
+INSIGHT_LLM__ENABLE_THINKING=false                     # Qwen3 hybrid thinking
+```
+
+The `LlmService` translates between Anthropic's tool-use shape and the
+OpenAI-compatible `tools[]` / `tool_calls[]` shape automatically. The four-
+tool surface (§7 Flow A) works identically on either provider.
 
 ### On-prem / sovereignty deployment
 

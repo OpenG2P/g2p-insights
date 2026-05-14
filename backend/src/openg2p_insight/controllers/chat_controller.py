@@ -38,6 +38,7 @@ from ..services.cost_gate_service import CostGateService, CostLevel, CostReport
 from ..services.llm_service import (
     Clarification,
     ConvMessage,
+    DirectAnswer,
     ExpertRedirect,
     Intent,
     LlmService,
@@ -206,6 +207,27 @@ class ChatController(BaseController):
                 status="needs_clarification",
                 session_id=session.id,
                 clarification=plan,
+                pii_redactions=sanitized.redactions,
+                messages=session.messages,
+            )
+
+        if isinstance(plan, DirectAnswer):
+            session.messages = (session.messages or []) + [
+                {
+                    "role": "assistant",
+                    "content": plan.answer,
+                    "kind": "direct_answer",
+                    "source": plan.source,
+                }
+            ]
+            # Treat as a fully-answered turn so subsequent follow-ups still
+            # have a coherent thread.
+            session.status = "executed"
+            await self._persist(session)
+            return AskResponse(
+                status="direct_answer",
+                session_id=session.id,
+                direct_answer=plan,
                 pii_redactions=sanitized.redactions,
                 messages=session.messages,
             )

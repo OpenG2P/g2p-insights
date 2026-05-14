@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 from ..config import Settings
 from ..prompts.nl_to_intent import (
     CLARIFY_TOOL_SCHEMA,
+    DIRECT_ANSWER_TOOL_SCHEMA,
     EXPERT_REDIRECT_TOOL_SCHEMA,
     INTENT_TOOL_SCHEMA,
     NL_TO_INTENT_SYSTEM,
@@ -100,7 +101,18 @@ class ExpertRedirect(BaseModel):
     explanation: str = ""
 
 
-PlanResult = Union[Intent, Clarification, ExpertRedirect]
+class DirectAnswer(BaseModel):
+    """The LLM is answering a meta-question (about the schema, available
+    tables, what the system can do, what enum values a column takes, etc.)
+    directly from information already in its prompt. No SQL, no executor,
+    no cost gate."""
+
+    kind: Literal["direct_answer"] = "direct_answer"
+    answer: str
+    source: Literal["catalog", "system_info", "other"] = "catalog"
+
+
+PlanResult = Union[Intent, Clarification, ExpertRedirect, DirectAnswer]
 
 
 class ConvMessage(BaseModel):
@@ -127,12 +139,14 @@ _OPENAI_TOOLS = [
     _anthropic_to_openai_tool(INTENT_TOOL_SCHEMA),
     _anthropic_to_openai_tool(CLARIFY_TOOL_SCHEMA),
     _anthropic_to_openai_tool(EXPERT_REDIRECT_TOOL_SCHEMA),
+    _anthropic_to_openai_tool(DIRECT_ANSWER_TOOL_SCHEMA),
 ]
 
 _ANTHROPIC_TOOLS = [
     INTENT_TOOL_SCHEMA,
     CLARIFY_TOOL_SCHEMA,
     EXPERT_REDIRECT_TOOL_SCHEMA,
+    DIRECT_ANSWER_TOOL_SCHEMA,
 ]
 
 
@@ -236,6 +250,8 @@ class LlmService(BaseService):
                 return Intent.model_validate(block.input)
             if block.name == "propose_expert_redirect":
                 return ExpertRedirect.model_validate(block.input)
+            if block.name == "propose_direct_answer":
+                return DirectAnswer.model_validate(block.input)
         return Clarification(
             question="Could you tell me which table or metric you have in mind?",
             context="model_did_not_select_tool",
@@ -274,6 +290,8 @@ class LlmService(BaseService):
                 return Intent.model_validate(args)
             if name == "propose_expert_redirect":
                 return ExpertRedirect.model_validate(args)
+            if name == "propose_direct_answer":
+                return DirectAnswer.model_validate(args)
 
         # No tool call — surface a generic clarification rather than guess.
         _logger.warning(
