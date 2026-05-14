@@ -187,7 +187,8 @@ class SqlPlannerService(BaseService):
         if not order_by:
             return ""
         # Build the alias the metric was projected under.
-        metric_alias = "total" if metric == "count" else "metric_value"
+        # count + count_distinct both alias as `total`; sum/avg/min/max as `metric_value`.
+        metric_alias = "total" if metric in ("count", "count_distinct") else "metric_value"
         # Names the LLM might use to mean "order by the aggregate value".
         natural_metric_aliases = {
             "count", "counts", "n", "total", "totals",

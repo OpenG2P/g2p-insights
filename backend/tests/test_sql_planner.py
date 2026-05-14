@@ -149,6 +149,22 @@ def test_order_by_count_is_normalised_to_total_alias():
     assert "count DESC" not in planned.sql.lower().replace("count(", "")
 
 
+def test_order_by_with_count_distinct_uses_total_alias():
+    """count_distinct projects as `total`, not `metric_value`. ORDER BY
+    referencing the natural names must normalise to `total`."""
+    svc = _svc_with_catalog(["mv_individuals_summary"])
+    intent = Intent(
+        entity="mv_individuals_summary",
+        metric="count_distinct",
+        metric_column="region_code",
+        order_by=["count DESC", "metric_value DESC"],
+    )
+    planned = svc.build(intent, placeholder_map={})
+    # Both natural-name forms should normalise to `total`.
+    assert "ORDER BY total DESC, total DESC" in planned.sql
+    assert "metric_value" not in planned.sql  # the alias for count_distinct is total
+
+
 def test_order_by_avg_metric_uses_metric_value_alias():
     svc = _svc_with_catalog(["mv_individuals_summary"])
     intent = Intent(

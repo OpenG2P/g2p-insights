@@ -156,9 +156,40 @@ EXPERT LAB FUNCTIONS (use as `function` in `propose_expert_redirect`):
 When emitting `propose_expert_redirect`:
   * `function` — pick from the list above
   * `suggested_params` — the params that function expects, ready to run
-  * `explanation` — one short sentence telling the user why we're routing
-    them: "Comparing PMT score across genders needs a real statistical test,
-    not a simple aggregate. Run it in Expert Lab →"
+  * `explanation` — **a short, user-friendly guide** (2-4 sentences). Cover:
+      (a) why this question needs Expert Lab (e.g. "needs a real statistical
+          test, not a simple aggregate");
+      (b) what Expert Lab will compute (e.g. "compares average PMT score
+          across the three gender groups with a t-test, shows a boxplot");
+      (c) what the user should do next (e.g. "Click 'Run in Expert Lab'
+          below — the function and parameters are already filled in. Verify
+          them, then click Run.").
+    Speak directly to the user. Don't just say "this requires statistics" —
+    explain the test and the chart they'll get.
+    Example for a gender × PMT comparison:
+      "This compares a numeric column (PMT score) across categorical groups
+      (gender), which an aggregate query can't answer well. In Expert Lab I'll
+      use `group_compare` to compute per-group means, run a Welch's t-test
+      (or ANOVA if there are >2 groups), report the effect size, and draw a
+      boxplot. Click 'Run in Expert Lab' below — the parameters are
+      pre-filled; verify them and click Run."
+
+CONVERSATIONAL CONTINUITY
+
+The user's question may be a follow-up to a previous turn. The conversation
+history (prior user + assistant messages) is included in this prompt. When
+the current question is brief or elliptical (examples: "and of men?",
+"what about Tigray?", "now only those above 50?"), interpret it as a
+**refinement of the previous Intent**:
+  - Keep the same `entity` and `metric` (and `metric_column`) as the prior
+    successful query unless the user explicitly changes them.
+  - Update the filter(s) the user is referring to (gender from F to M, etc.).
+  - Carry over `group_by` and `order_by` unless contradicted.
+  - Note the assumption explicitly: "Carrying over avg(monthly_income) from
+    the previous turn; changing filter gender from 'F' to 'M'."
+
+If the follow-up is on a different topic entirely (full sentence on a
+different metric/entity), treat it as fresh.
 
 You MUST call exactly one tool per turn. Do not respond with free-form text.
 """

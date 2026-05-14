@@ -76,12 +76,25 @@ class ChatController(BaseController):
 
             sanitized = self._pii.sanitize(req.question, session_id=session_id)
             session.placeholder_map = sanitized.placeholder_map or None
-            session.messages = (session.messages or []) + [
+
+            # Carry the conversation forward: prior user / assistant turns go
+            # to the LLM as history so it can interpret follow-ups like
+            # "and of men?" as refinements of the previous question rather
+            # than fresh queries.
+            prior_messages = session.messages or []
+            history = [
+                ConvMessage(role=m["role"], content=m["content"])
+                for m in prior_messages
+                if m.get("role") in ("user", "assistant") and m.get("content")
+            ]
+
+            # Append the current user question to the persisted thread.
+            session.messages = prior_messages + [
                 {"role": "user", "content": req.question}
             ]
 
             schemas = await self._schema.retrieve_relevant(sanitized.text)
-            plan = await self._llm.plan(sanitized.text, schemas, history=[])
+            plan = await self._llm.plan(sanitized.text, schemas, history=history)
             return await self._handle_plan(session, sanitized, plan, req.auto_run_yellow)
 
         @self.router.post("/ask/clarify", response_model=AskResponse)
@@ -260,6 +273,18 @@ class ChatController(BaseController):
             )
 
         result = await self._exec.run(sql, group_by=intent.group_by)
+
+        # Append an assistant turn summarising what was computed so the LLM
+        # has context for follow-ups like "and of men?". Short — the goal is
+        # to anchor the entity / metric / filters / rough result, not to
+        # mirror the entire data frame.
+        session.messages = (session.messages or []) + [
+            {
+                "role": "assistant",
+                "kind": "result_summary",
+                "content": _summarise_result(intent, sql_text, result.rows),
+            }
+        ]
         session.status = "executed"
         await self._persist(session)
         await self._audit.record_query(
@@ -325,3 +350,33 @@ class ChatController(BaseController):
         async with AsyncSession(engine) as db:
             await db.merge(session)
             await db.commit()
+
+
+def _summarise_result(intent: Intent, sql_text: str, rows: list[dict]) -> str:
+    """Build a short assistant-side message that anchors the LLM for follow-ups.
+    Includes the entity, metric, and a one-line preview of the result so the
+    next user message can be interpreted relative to it."""
+    metric = intent.metric
+    metric_col = intent.metric_column or ""
+    metric_label = f"{metric}({metric_col})" if metric_col else metric
+    filt_parts = []
+    for f in intent.filters:
+        filt_parts.append(f"{f.col} {f.op} {f.val!r}")
+    filt = "; filters: " + ", ".join(filt_parts) if filt_parts else ""
+    grouped = f"; grouped by {', '.join(intent.group_by)}" if intent.group_by else ""
+
+    if not rows:
+        head = "(no rows)"
+    elif len(rows) == 1:
+        head = ", ".join(f"{k}={v}" for k, v in list(rows[0].items())[:4])
+    else:
+        first = rows[0]
+        head = (
+            ", ".join(f"{k}={v}" for k, v in list(first.items())[:3])
+            + f" … ({len(rows)} rows)"
+        )
+
+    return (
+        f"Computed {metric_label} from {intent.entity}{grouped}{filt}. "
+        f"Result: {head}."
+    )

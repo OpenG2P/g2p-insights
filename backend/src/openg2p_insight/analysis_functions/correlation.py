@@ -75,7 +75,12 @@ async def correlation(req: AnalyticsRequest) -> dict:
         }
 
     df = df[keep_cols]
-    df_enc = pd.get_dummies(df, drop_first=True)
+    # drop_first=False — keep ALL categories visible. The "drop first to avoid
+    # multicollinearity" trick is for regression; a correlation matrix is
+    # descriptive, and dropping a reference category silently hides whether
+    # that category correlates with anything. Users expect to see all of
+    # `gender_F`, `gender_M`, `gender_O` — not just two of them.
+    df_enc = pd.get_dummies(df, drop_first=False)
     _logger.info("[correlation] encoded shape=%s", df_enc.shape)
     if df_enc.shape[1] > 200:
         # Defense in depth — even with the cardinality cap, multiple low-card
@@ -89,6 +94,24 @@ async def correlation(req: AnalyticsRequest) -> dict:
     corr = df_enc.corr(method=method)
     _logger.info("[correlation] correlation matrix shape=%s", corr.shape)
 
+    # Surface diagnostics the user would otherwise miss when the heatmap
+    # silently coalesces NaN → 0 and tiny correlations look blank.
+    off_diag = corr.where(~np.eye(corr.shape[0], dtype=bool))
+    nan_cells = int(off_diag.isna().sum().sum())
+    max_abs = float(off_diag.abs().max().max()) if not off_diag.empty else 0.0
+    if nan_cells:
+        assumptions.append(
+            f"{nan_cells} off-diagonal cells are NaN (insufficient overlap, "
+            "typically when a numeric column has many NULLs). Heatmap renders "
+            "these as 0."
+        )
+    if max_abs < 0.1:
+        assumptions.append(
+            f"Strongest off-diagonal correlation is |{max_abs:.3f}| — effectively no "
+            "linear relationship. For categorical-vs-numeric questions like "
+            "'does gender relate to income', `group_compare` is a better tool."
+        )
+
     if do_cluster and corr.shape[0] <= _MAX_COLUMNS_FOR_CLUSTERING:
         try:
             from scipy.cluster import hierarchy
@@ -101,7 +124,11 @@ async def correlation(req: AnalyticsRequest) -> dict:
             assumptions.append(f"Clustering attempted but failed: {exc!s}")
 
     assumptions.insert(0, f"Method: {method}")
-    assumptions.append("Categorical columns one-hot encoded (drop_first=True).")
+    assumptions.append(
+        "Categorical columns one-hot encoded (all categories shown — drop_first=False). "
+        "Note: dummies of the same column are deterministically related to one another; "
+        "what matters is each dummy's correlation with the OTHER columns."
+    )
 
     return {
         "result": {"matrix": corr.to_dict(), "labels": list(corr.columns)},
