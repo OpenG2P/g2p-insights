@@ -33,6 +33,18 @@ fi
 PY=$(command -v python)
 echo "[dev_run] using python: $PY"
 
+# ---- .env --------------------------------------------------------------------
+# If backend/.env exists, source it. Anything defined there is auto-exported
+# (set -a) and overrides what's in the shell, then the `${VAR:-default}`
+# blocks below fill in anything still empty.
+if [ -f .env ]; then
+    echo "[dev_run] loading backend/.env"
+    set -a
+    # shellcheck disable=SC1091
+    . ./.env
+    set +a
+fi
+
 # ---- env vars ----------------------------------------------------------------
 # Match what test-stack/docker-compose.yaml sets, but point at localhost ports.
 

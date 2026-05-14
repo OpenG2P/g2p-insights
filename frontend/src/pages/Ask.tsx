@@ -11,6 +11,8 @@ import {
   Tag,
   Typography,
 } from "antd";
+import { useNavigate } from "react-router-dom";
+import { ExperimentOutlined } from "@ant-design/icons";
 import { ask, clarify, confirm, type AskResponse, type ClarifyOption, type ConvMessage } from "../api/client";
 import AssumptionsPanel from "../components/AssumptionsPanel";
 import AutoChart from "../components/AutoChart";
@@ -22,6 +24,7 @@ const { Title, Text } = Typography;
 const { TextArea } = Input;
 
 export default function Ask() {
+  const navigate = useNavigate();
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(false);
   const [resp, setResp] = useState<AskResponse | null>(null);
@@ -178,6 +181,36 @@ export default function Ask() {
               }}
             >
               Run anyway
+            </Button>
+          }
+        />
+      )}
+
+      {/* Expert-lab redirect — LLM detected a statistical question that
+          our aggregation-only Intent can't express. */}
+      {resp?.status === "expert_redirect" && resp.expert_redirect && (
+        <Alert
+          type="info"
+          showIcon
+          message="This question needs statistical analysis"
+          description={resp.expert_redirect.explanation}
+          action={
+            <Button
+              type="primary"
+              icon={<ExperimentOutlined />}
+              onClick={() => {
+                sessionStorage.setItem(
+                  "insight.expertPrefill",
+                  JSON.stringify({
+                    function: resp.expert_redirect!.function,
+                    params: resp.expert_redirect!.suggested_params,
+                    question: resp.messages?.find((m) => m.role === "user")?.content ?? "",
+                  }),
+                );
+                navigate("/expert");
+              }}
+            >
+              Run in Expert Lab
             </Button>
           }
         />

@@ -10,9 +10,11 @@ Each function takes an AnalyticsRequest and returns a dict with keys:
 from .correlation import correlation
 from .crosstab import crosstab
 from .distribution import distribution
+from .group_compare import group_compare
 
 ANALYSIS_REGISTRY = {
     "distribution": distribution,
     "correlation": correlation,
     "crosstab": crosstab,
+    "group_compare": group_compare,
 }

@@ -19,7 +19,8 @@ async def crosstab(req: AnalyticsRequest) -> dict:
     if not row or not col:
         return {"result": {}, "viz_spec": {}, "assumptions": ["error: row & col params required"]}
 
-    df = await extract(req.entity, [row, col], req.filters, req.sample_size)
+    sample_size = req.sample_size or 50_000
+    df = await extract(req.entity, [row, col], req.filters, sample_size)
     if df.empty:
         return {"result": {}, "viz_spec": {}, "assumptions": ["No rows matched filters"]}
 

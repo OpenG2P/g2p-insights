@@ -3,7 +3,9 @@ import {
   Alert,
   Button,
   Card,
+  Col,
   Input,
+  Row,
   Space,
   Table,
   Typography,
@@ -81,19 +83,11 @@ export default function Dashboards() {
     }
   };
 
-  return (
-    <div>
-      <Space style={{ width: "100%", justifyContent: "space-between" }}>
-        <Title level={3} style={{ marginBottom: 0 }}>Dashboards</Title>
-        {!authoring && (
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setAuthoring(true)}>
-            Add chart from natural language
-          </Button>
-        )}
-      </Space>
-
+  // -- main column (input, preview, save flow) -------------------------------
+  const mainColumn = (
+    <Space direction="vertical" style={{ width: "100%" }} size="middle">
       {!authoring && !saved && (
-        <Card style={{ marginTop: 16 }}>
+        <Card>
           <Space direction="vertical">
             <Text>
               Charts and dashboards are managed in Apache Superset.
@@ -116,7 +110,7 @@ export default function Dashboards() {
       )}
 
       {authoring && (
-        <Card style={{ marginTop: 16 }}>
+        <Card>
           <Space direction="vertical" style={{ width: "100%" }} size="middle">
             <Text strong>Describe the chart you want</Text>
             <TextArea
@@ -147,19 +141,17 @@ export default function Dashboards() {
         </Card>
       )}
 
-      {err && <Alert style={{ marginTop: 16 }} type="error" message={err} />}
+      {err && <Alert type="error" message={err} />}
 
+      {/* Preview data + save buttons — chart-data preview, not metadata. */}
       {preview && (
-        <Space direction="vertical" style={{ width: "100%", marginTop: 16 }} size="middle">
-          {preview.cost && <CostWarning cost={preview.cost} />}
-          <SqlPanel sql={preview.sql} defaultOpen={false} />
+        <Space direction="vertical" style={{ width: "100%" }} size="middle">
           {preview.viz_spec && (
             <Tag style={{ background: palette.lightGrey }}>
               Suggested viz: <b>{preview.viz_spec.type}</b>
               {preview.viz_spec.title ? ` — ${preview.viz_spec.title}` : ""}
             </Tag>
           )}
-          <AssumptionsPanel assumptions={preview.assumptions} />
           {preview.preview_rows?.length ? (
             <Card title="Preview data (first rows)">
               <Table
@@ -192,7 +184,6 @@ export default function Dashboards() {
 
       {saved && (
         <Alert
-          style={{ marginTop: 16 }}
           type="success"
           showIcon
           message={`Chart saved to Superset (id=${saved.chart_id})`}
@@ -217,6 +208,43 @@ export default function Dashboards() {
           }
         />
       )}
+    </Space>
+  );
+
+  // -- right-side metadata panel --------------------------------------------
+  const showSidebar = preview && (preview.cost || preview.sql || preview.assumptions?.length);
+
+  const sidebar = showSidebar ? (
+    <Space direction="vertical" style={{ width: "100%", position: "sticky", top: 16 }} size="middle">
+      <Text strong style={{ fontFamily: '"Roboto Slab", serif', fontSize: 13, color: palette.black }}>
+        Chart details
+      </Text>
+      {preview!.cost && <CostWarning cost={preview!.cost} />}
+      <AssumptionsPanel assumptions={preview!.assumptions} />
+      <SqlPanel sql={preview!.sql} defaultOpen={false} />
+    </Space>
+  ) : null;
+
+  return (
+    <div>
+      <Space style={{ width: "100%", justifyContent: "space-between", marginBottom: 16 }}>
+        <Title level={3} style={{ marginBottom: 0 }}>Dashboards</Title>
+        {!authoring && (
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setAuthoring(true)}>
+            Add chart from natural language
+          </Button>
+        )}
+      </Space>
+      <Row gutter={16}>
+        <Col xs={24} lg={showSidebar ? 16 : 24}>
+          {mainColumn}
+        </Col>
+        {showSidebar && (
+          <Col xs={24} lg={8}>
+            {sidebar}
+          </Col>
+        )}
+      </Row>
     </div>
   );
 }

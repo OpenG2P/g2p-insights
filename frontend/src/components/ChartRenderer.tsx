@@ -26,6 +26,29 @@ export default function ChartRenderer({ vizSpec, data }: Props) {
     );
   }
 
+  if (type === "boxplot" && data.raw_values_for_plot) {
+    const groups = data.raw_values_for_plot as Record<string, number[]>;
+    return (
+      <Plot
+        data={Object.entries(groups).map(([name, values]) => ({
+          type: "box",
+          name,
+          y: values,
+          boxpoints: "outliers" as const,
+        }))}
+        layout={{
+          xaxis: { title: { text: (vizSpec.x_label as string) || "group" } },
+          yaxis: { title: { text: (vizSpec.y_label as string) || "value" } },
+          showlegend: false,
+          margin: { t: 24 },
+          autosize: true,
+        }}
+        style={{ width: "100%", height: 420 }}
+        useResizeHandler
+      />
+    );
+  }
+
   if (type === "heatmap" && data.matrix) {
     const matrix = data.matrix as Record<string, Record<string, number>>;
     const labels = Object.keys(matrix);

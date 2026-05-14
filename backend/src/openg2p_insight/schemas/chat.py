@@ -7,7 +7,7 @@ from typing import Any, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 from ..services.cost_gate_service import CostReport
-from ..services.llm_service import Clarification, VizSpec
+from ..services.llm_service import Clarification, ExpertRedirect, VizSpec
 from ..services.pii_service import PiiRedaction
 
 
@@ -40,6 +40,7 @@ ResponseStatus = Literal[
     "needs_clarification",
     "needs_confirmation",  # YELLOW cost; user must confirm
     "rejected",            # RED cost — won't run
+    "expert_redirect",     # question needs statistical analysis; use Expert Lab
 ]
 
 
@@ -49,6 +50,11 @@ class AskResponse(BaseModel):
 
     # Clarification (present only when status == "needs_clarification")
     clarification: Optional[Clarification] = None
+
+    # Expert-lab redirect (present only when status == "expert_redirect").
+    # The frontend renders a card with a button that deep-links to the
+    # Expert Lab page with the function + params pre-filled.
+    expert_redirect: Optional[ExpertRedirect] = None
 
     # Always present once intent is committed — the user can inspect the SQL
     # at any time. We DO NOT block on user approval; the cost gate decides

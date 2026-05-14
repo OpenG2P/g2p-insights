@@ -32,11 +32,24 @@ class EmbeddingsConfig(BaseModel):
 
 
 class LlmConfig(BaseModel):
-    provider: Literal["anthropic"] = "anthropic"
+    # "anthropic"         — native Anthropic API (Claude).
+    # "openai_compatible" — any OpenAI-compatible endpoint (OpenRouter, Groq,
+    #                       self-hosted vLLM, Together, …). Set `base_url`.
+    provider: Literal["anthropic", "openai_compatible"] = "anthropic"
     model: str = "claude-opus-4-7"
     max_tokens: int = 4096
     temperature: float = 0.0
-    api_key: str = ""  # ANTHROPIC_API_KEY
+    # For anthropic: ANTHROPIC_API_KEY. For openai_compatible: that provider's
+    # key (e.g. an OpenRouter `sk-or-...`).
+    api_key: str = ""
+    # Used only by openai_compatible. e.g. "https://openrouter.ai/api/v1".
+    base_url: str = ""
+    # Qwen3 hybrid thinking. When True, prepend `/think` to the user message;
+    # when False, prepend `/no_think`. Other models ignore the directive.
+    enable_thinking: bool = False
+    # Optional headers — OpenRouter wants HTTP-Referer + X-Title for app
+    # attribution. Pass as e.g. INSIGHT_LLM__EXTRA_HEADERS='{"HTTP-Referer":"https://insight.qa2.openg2p.org","X-Title":"OpenG2P Insight"}'
+    extra_headers: dict = {}
 
 
 class KAnonymityConfig(BaseModel):

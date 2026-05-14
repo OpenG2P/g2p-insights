@@ -17,7 +17,7 @@ over relational registry data.
 
 Your job is to take a PII-sanitized natural-language question plus a list of
 available tables / views (with column names, types, and brief descriptions),
-and emit EITHER:
+and emit EXACTLY ONE of:
 
   (a) `request_clarification` — when the question is ambiguous, when an
       applicable field is unclear, when an enum value can't be matched, when
@@ -25,7 +25,21 @@ and emit EITHER:
       scope (time range, geographic area, currency) is missing.
 
   (b) `propose_intent` — when you can produce a confident, well-grounded
-      Intent JSON.
+      Intent JSON for an AGGREGATION question (count, sum, avg, min, max,
+      count_distinct, with optional filters / group_by).
+
+  (c) `propose_expert_redirect` — when the question requires STATISTICAL
+      analysis that an aggregation Intent cannot express. Examples:
+        - "Is X correlated with Y?"
+        - "Do these groups (men vs women) differ on metric Z?"
+        - "What's the distribution of pmt_score?"
+        - "Are IDP households more food-insecure than non-IDP, statistically?"
+        - "What's the relationship between roof material and household income?"
+      Trigger words to watch for: correlation, related, predict, significant,
+      differ, distribution, spread, variance, association. For these, the
+      simple Intent shape (a single aggregate) gives misleading answers. The
+      right place is the Expert Lab, which has registered statistical
+      primitives. List below.
 
 WHEN TO CLARIFY (call `request_clarification`):
   - The user says "income" but BOTH `monthly_income` AND `household_monthly_income` exist.
@@ -118,6 +132,34 @@ VISUALISATION RULES — populate the `viz` field carefully:
 
   C. ALWAYS set a short, human-readable `viz.title`.
 
+EXPERT LAB FUNCTIONS (use as `function` in `propose_expert_redirect`):
+
+  - `group_compare` — compare a numeric metric across categories.
+       Params: {metric, group_by} both required, optional `test`.
+       Use for: "do women have lower PMT score", "do IDP households differ
+       from host community", "is income different between livelihoods".
+
+  - `correlation` — correlation matrix over multiple columns.
+       Params: {method?, cluster?}. Pass `columns` at request level.
+       Use for: multi-variable correlation matrices, exploratory analysis.
+
+  - `crosstab` — contingency table + chi-square for two categorical columns.
+       Params: {row, col}.
+       Use for: "are women more likely to be IDP", "is roof material
+       associated with region".
+
+  - `distribution` — histogram + percentiles + fitted distributions for a
+       single numeric column.
+       Params: {bins?, fits?}. Pass `column` at request level.
+       Use for: "what does the PMT score distribution look like".
+
+When emitting `propose_expert_redirect`:
+  * `function` — pick from the list above
+  * `suggested_params` — the params that function expects, ready to run
+  * `explanation` — one short sentence telling the user why we're routing
+    them: "Comparing PMT score across genders needs a real statistical test,
+    not a simple aggregate. Run it in Expert Lab →"
+
 You MUST call exactly one tool per turn. Do not respond with free-form text.
 """
 
@@ -182,6 +224,31 @@ INTENT_TOOL_SCHEMA = {
         "required": ["entity", "metric"],
     },
 }
+
+EXPERT_REDIRECT_TOOL_SCHEMA = {
+    "name": "propose_expert_redirect",
+    "description": "Use when the question requires statistical analysis (correlation, group comparison, distribution shape, association tests) that the aggregation-only Intent cannot express. Picks a registered Expert Lab function with suggested params.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "function": {
+                "type": "string",
+                "enum": ["group_compare", "correlation", "crosstab", "distribution"],
+                "description": "Registered Expert Lab function. See the EXPERT LAB FUNCTIONS section of the system prompt for inputs.",
+            },
+            "suggested_params": {
+                "type": "object",
+                "description": "Params the chosen function expects, ready to run. e.g. for group_compare: {metric: 'pmt_score', group_by: 'gender'}; for crosstab: {row: 'displacement_status', col: 'gender'}; for distribution: {column: 'pmt_score', bins: 50}.",
+            },
+            "explanation": {
+                "type": "string",
+                "description": "One short sentence explaining why this requires Expert Lab instead of /ask.",
+            },
+        },
+        "required": ["function", "suggested_params", "explanation"],
+    },
+}
+
 
 CLARIFY_TOOL_SCHEMA = {
     "name": "request_clarification",

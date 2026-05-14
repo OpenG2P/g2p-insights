@@ -57,6 +57,7 @@ def _table() -> TableSpec:
 def _svc_with_client(client) -> LlmService:
     svc = LlmService.__new__(LlmService)
     svc._client = client
+    svc._provider = "anthropic"   # stub mimics Anthropic's response shape
     return svc
 
 

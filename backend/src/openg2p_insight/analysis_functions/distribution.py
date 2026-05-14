@@ -21,8 +21,9 @@ async def distribution(req: AnalyticsRequest) -> dict:
 
     bins = int(req.params.get("bins", 50))
     fits = req.params.get("fits", ["normal", "lognormal"])
+    sample_size = req.sample_size or 50_000
 
-    df = await extract(req.entity, [req.column], req.filters, req.sample_size)
+    df = await extract(req.entity, [req.column], req.filters, sample_size)
     if df.empty:
         return {"result": {}, "viz_spec": {}, "assumptions": ["No rows matched filters"]}
 

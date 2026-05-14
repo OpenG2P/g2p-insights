@@ -38,6 +38,7 @@ from ..services.cost_gate_service import CostGateService, CostLevel, CostReport
 from ..services.llm_service import (
     Clarification,
     ConvMessage,
+    ExpertRedirect,
     Intent,
     LlmService,
     PlanResult,
@@ -192,6 +193,27 @@ class ChatController(BaseController):
                 status="needs_clarification",
                 session_id=session.id,
                 clarification=plan,
+                pii_redactions=sanitized.redactions,
+                messages=session.messages,
+            )
+
+        if isinstance(plan, ExpertRedirect):
+            session.messages = (session.messages or []) + [
+                {
+                    "role": "assistant",
+                    "content": plan.explanation or
+                        "This question needs statistical analysis — please run it in Expert Lab.",
+                    "kind": "expert_redirect",
+                    "function": plan.function,
+                    "suggested_params": plan.suggested_params,
+                }
+            ]
+            session.status = "expert_redirect"
+            await self._persist(session)
+            return AskResponse(
+                status="expert_redirect",
+                session_id=session.id,
+                expert_redirect=plan,
                 pii_redactions=sanitized.redactions,
                 messages=session.messages,
             )

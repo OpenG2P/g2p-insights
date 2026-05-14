@@ -1,18 +1,21 @@
 """
-Claude orchestrator — tool-use loop with clarification support.
+Claude / OpenAI-compatible orchestrator with tool-use + clarification support.
 
-Takes a sanitized question (plus optional conversation history) and the
-relevant catalog slice, then asks Claude to call ONE of two tools:
+Two provider paths share the same Pydantic result types (`Intent` /
+`Clarification`):
 
-  * `request_clarification` — Claude needs more info from the user.
-  * `propose_intent`        — Claude is confident and emits an Intent JSON.
+  * `anthropic`         — native Claude SDK
+  * `openai_compatible` — any provider with an OpenAI-compatible
+                          chat-completions API: OpenRouter, Groq, Together,
+                          self-hosted vLLM, etc.
 
-The service returns a `PlanResult` union — the controller picks the path
-based on the `kind` field.
+Switching providers is a config change (`INSIGHT_LLM__PROVIDER`,
+`INSIGHT_LLM__BASE_URL`, `INSIGHT_LLM__MODEL`, `INSIGHT_LLM__API_KEY`).
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import List, Literal, Optional, Union
@@ -23,6 +26,7 @@ from pydantic import BaseModel, Field
 from ..config import Settings
 from ..prompts.nl_to_intent import (
     CLARIFY_TOOL_SCHEMA,
+    EXPERT_REDIRECT_TOOL_SCHEMA,
     INTENT_TOOL_SCHEMA,
     NL_TO_INTENT_SYSTEM,
 )
@@ -50,21 +54,14 @@ class VizSpec(BaseModel):
     title: Optional[str] = None
     extra: dict = Field(default_factory=dict)
 
-    # Did the user's question explicitly request this viz type?
     user_requested: bool = False
-    # Does this viz type sensibly fit the data the query will return?
-    # When False, the UI shows a polite "this viz doesn't fit because…" notice
-    # and renders the data as a table instead.
     applies: bool = True
     applies_reason: Optional[str] = None
 
 
 class Intent(BaseModel):
     kind: Literal["intent"] = "intent"
-    intent: str = "aggregate"           # "aggregate" | "distribution" | "raw"
-    # count           → COUNT(*)
-    # count_distinct  → COUNT(DISTINCT <metric_column>)   ← requires metric_column
-    # sum/avg/min/max → SUM(...)/AVG(...)/...             ← requires metric_column
+    intent: str = "aggregate"
     metric: str = "count"
     metric_column: Optional[str] = None
     entity: str
@@ -90,15 +87,53 @@ class Clarification(BaseModel):
     free_text_allowed: bool = True
 
 
-PlanResult = Union[Intent, Clarification]
+class ExpertRedirect(BaseModel):
+    """The LLM has detected that the user's question needs statistical
+    analysis that the simple Intent shape (aggregates only) can't express.
+    The frontend renders a card with a 'Run in Expert Lab' button that
+    deep-links into the Expert Lab page with the suggested function +
+    parameters pre-filled."""
+
+    kind: Literal["expert_redirect"] = "expert_redirect"
+    function: str
+    suggested_params: dict = Field(default_factory=dict)
+    explanation: str = ""
 
 
-# -----------------------------------------------------------------------------
-# Conversation message — used to feed Claude prior turns
-# -----------------------------------------------------------------------------
+PlanResult = Union[Intent, Clarification, ExpertRedirect]
+
+
 class ConvMessage(BaseModel):
     role: Literal["user", "assistant"] = "user"
     content: str
+
+
+# -----------------------------------------------------------------------------
+# Tool-schema translation helpers
+# -----------------------------------------------------------------------------
+def _anthropic_to_openai_tool(t: dict) -> dict:
+    """Anthropic's tool format → OpenAI's `tools[]` shape."""
+    return {
+        "type": "function",
+        "function": {
+            "name": t["name"],
+            "description": t.get("description", ""),
+            "parameters": t["input_schema"],
+        },
+    }
+
+
+_OPENAI_TOOLS = [
+    _anthropic_to_openai_tool(INTENT_TOOL_SCHEMA),
+    _anthropic_to_openai_tool(CLARIFY_TOOL_SCHEMA),
+    _anthropic_to_openai_tool(EXPERT_REDIRECT_TOOL_SCHEMA),
+]
+
+_ANTHROPIC_TOOLS = [
+    INTENT_TOOL_SCHEMA,
+    CLARIFY_TOOL_SCHEMA,
+    EXPERT_REDIRECT_TOOL_SCHEMA,
+]
 
 
 # -----------------------------------------------------------------------------
@@ -108,12 +143,18 @@ class LlmService(BaseService):
     def __init__(self, name: str = ""):
         super().__init__(name)
         self._client = None
+        self._provider = _config.llm.provider
         self._init_client()
 
     def _init_client(self) -> None:
+        if self._provider == "openai_compatible":
+            self._init_openai_client()
+        else:
+            self._init_anthropic_client()
+
+    def _init_anthropic_client(self) -> None:
         try:
             from anthropic import AsyncAnthropic
-
             api_key = _config.llm.api_key or os.environ.get("ANTHROPIC_API_KEY", "")
             if not api_key:
                 _logger.warning(
@@ -124,6 +165,32 @@ class LlmService(BaseService):
         except Exception as exc:  # noqa: BLE001
             _logger.warning("Anthropic client init failed: %s", exc)
 
+    def _init_openai_client(self) -> None:
+        try:
+            from openai import AsyncOpenAI
+            api_key = _config.llm.api_key or os.environ.get("OPENAI_API_KEY", "")
+            base_url = _config.llm.base_url
+            if not api_key:
+                _logger.warning(
+                    "LLM provider is openai_compatible but INSIGHT_LLM__API_KEY is not set; "
+                    "falling back to deterministic stub"
+                )
+                return
+            if not base_url:
+                _logger.warning(
+                    "openai_compatible provider requires INSIGHT_LLM__BASE_URL (e.g. "
+                    "https://openrouter.ai/api/v1); falling back to stub"
+                )
+                return
+            self._client = AsyncOpenAI(
+                api_key=api_key,
+                base_url=base_url,
+                default_headers=_config.llm.extra_headers or None,
+            )
+            _logger.info("LLM client: openai_compatible @ %s model=%s", base_url, _config.llm.model)
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning("OpenAI-compatible client init failed: %s", exc)
+
     # ---------------------- public API ---------------------------------------
 
     async def plan(
@@ -132,27 +199,34 @@ class LlmService(BaseService):
         tables: List[TableSpec],
         history: Optional[List[ConvMessage]] = None,
     ) -> PlanResult:
-        """
-        Returns EITHER an Intent (LLM is ready to commit) or a Clarification
-        (LLM wants more info from the user).
-        """
         if self._client is None:
             return self._fallback_intent(tables)
 
-        messages = self._build_messages(sanitized_question, tables, history or [])
+        if self._provider == "openai_compatible":
+            return await self._plan_openai(sanitized_question, tables, history or [])
+        return await self._plan_anthropic(sanitized_question, tables, history or [])
 
-        # NOTE: `temperature` is deprecated for Opus 4.7 (and likely future
-        # Claude 4.x models). Don't send it unconditionally. If you need a
-        # specific temperature, set it via INSIGHT_LLM__TEMPERATURE and we'll
-        # forward it on supported models — for now we just don't pass it.
+    async def plan_chart(
+        self, sanitized_question: str, tables: List[TableSpec]
+    ) -> PlanResult:
+        return await self.plan(sanitized_question, tables)
+
+    # ---------------------- Anthropic path ----------------------------------
+
+    async def _plan_anthropic(
+        self,
+        sanitized_question: str,
+        tables: List[TableSpec],
+        history: List[ConvMessage],
+    ) -> PlanResult:
+        messages = self._anthropic_messages(sanitized_question, tables, history)
         response = await self._client.messages.create(
             model=_config.llm.model,
             max_tokens=_config.llm.max_tokens,
             system=NL_TO_INTENT_SYSTEM,
-            tools=[INTENT_TOOL_SCHEMA, CLARIFY_TOOL_SCHEMA],
+            tools=_ANTHROPIC_TOOLS,
             messages=messages,
         )
-
         for block in response.content:
             if block.type != "tool_use":
                 continue
@@ -160,67 +234,124 @@ class LlmService(BaseService):
                 return Clarification.model_validate(block.input)
             if block.name == "propose_intent":
                 return Intent.model_validate(block.input)
-
-        # Model didn't pick a tool — clarify generically rather than guess.
+            if block.name == "propose_expert_redirect":
+                return ExpertRedirect.model_validate(block.input)
         return Clarification(
             question="Could you tell me which table or metric you have in mind?",
             context="model_did_not_select_tool",
             options=[],
         )
 
-    async def plan_chart(
-        self, sanitized_question: str, tables: List[TableSpec]
+    # ---------------------- OpenAI-compatible path --------------------------
+
+    async def _plan_openai(
+        self,
+        sanitized_question: str,
+        tables: List[TableSpec],
+        history: List[ConvMessage],
     ) -> PlanResult:
-        """Same as `plan`, but the chart-authoring controller calls this. Today
-        it shares the same tool surface; we can specialize the prompt later."""
-        return await self.plan(sanitized_question, tables)
+        messages = self._openai_messages(sanitized_question, tables, history)
+        response = await self._client.chat.completions.create(
+            model=_config.llm.model,
+            max_tokens=_config.llm.max_tokens,
+            tools=_OPENAI_TOOLS,
+            tool_choice="auto",
+            messages=messages,
+        )
 
-    # ---------------------- internals ----------------------------------------
+        msg = response.choices[0].message
+        tool_calls = getattr(msg, "tool_calls", None) or []
+        for tc in tool_calls:
+            name = tc.function.name
+            try:
+                args = json.loads(tc.function.arguments or "{}")
+            except Exception as exc:  # noqa: BLE001
+                _logger.warning("LLM returned non-JSON tool args (%s): %s", exc, tc.function.arguments)
+                continue
+            if name == "request_clarification":
+                return Clarification.model_validate(args)
+            if name == "propose_intent":
+                return Intent.model_validate(args)
+            if name == "propose_expert_redirect":
+                return ExpertRedirect.model_validate(args)
 
-    @staticmethod
-    def _build_messages(
+        # No tool call — surface a generic clarification rather than guess.
+        _logger.warning(
+            "openai_compatible LLM did not call a tool; raw content: %r",
+            getattr(msg, "content", None),
+        )
+        return Clarification(
+            question="Could you tell me which table or metric you have in mind?",
+            context="model_did_not_select_tool",
+            options=[],
+        )
+
+    # ---------------------- message builders --------------------------------
+
+    def _anthropic_messages(
+        self,
         sanitized_question: str,
         tables: List[TableSpec],
         history: List[ConvMessage],
     ) -> list[dict]:
-        """Build the message list for the Anthropic API.
+        schema_blob = self._schema_blob(tables)
+        user_first = (
+            f"Available tables:\n{schema_blob}\n\n"
+            f"User question (PII-sanitized):\n{self._apply_thinking_directive(sanitized_question)}"
+        )
+        msgs: list[dict] = [{"role": "user", "content": user_first}]
+        for m in history:
+            msgs.append({"role": m.role, "content": m.content})
+        msgs.append({
+            "role": "user",
+            "content": (
+                "Call exactly one tool: `propose_intent` if you can commit, "
+                "otherwise `request_clarification`."
+            ),
+        })
+        return msgs
 
-        The first user message carries the schema; subsequent turns are
-        user / assistant pairs that capture clarifications already exchanged.
-        """
-        schema_blob = LlmService._schema_blob(tables)
+    def _openai_messages(
+        self,
+        sanitized_question: str,
+        tables: List[TableSpec],
+        history: List[ConvMessage],
+    ) -> list[dict]:
+        schema_blob = self._schema_blob(tables)
         msgs: list[dict] = [
+            {"role": "system", "content": NL_TO_INTENT_SYSTEM},
             {
                 "role": "user",
                 "content": (
                     f"Available tables:\n{schema_blob}\n\n"
-                    f"User question (PII-sanitized):\n{sanitized_question}"
+                    f"User question (PII-sanitized):\n{self._apply_thinking_directive(sanitized_question)}"
                 ),
-            }
+            },
         ]
         for m in history:
             msgs.append({"role": m.role, "content": m.content})
-        msgs.append(
-            {
-                "role": "user",
-                "content": (
-                    "Call exactly one tool: `propose_intent` if you can commit, "
-                    "otherwise `request_clarification`."
-                ),
-            }
-        )
+        msgs.append({
+            "role": "user",
+            "content": (
+                "Call exactly one tool: `propose_intent` if you can commit, "
+                "otherwise `request_clarification`."
+            ),
+        })
         return msgs
 
     @staticmethod
-    def _schema_blob(tables: List[TableSpec]) -> str:
-        """Render the schema for the LLM prompt.
+    def _apply_thinking_directive(text: str) -> str:
+        """Qwen3 honours `/think` and `/no_think` prefixes to toggle hybrid
+        thinking mode. Other models treat the prefix as plain text and ignore
+        it, so this is safe to apply unconditionally."""
+        prefix = "/think " if _config.llm.enable_thinking else "/no_think "
+        return prefix + text
 
-        IMPORTANT: include enum values inline. Without them the model
-        hallucinates filter values (e.g. emitting `gender = 'FEMALE'` when the
-        underlying Postgres enum only accepts 'M'/'F'/'O'), which then fails
-        at EXPLAIN time. Units and descriptions are included where present —
-        all of these meaningfully reduce wrong-SQL rates.
-        """
+    @staticmethod
+    def _schema_blob(tables: List[TableSpec]) -> str:
+        """Render the schema for the LLM prompt with enum values + units inline.
+        Stripping these regressed the LLM into hallucinating filter values like
+        `gender = 'FEMALE'` when the enum was `{M, F, O}`."""
         rows = []
         for t in tables:
             cols: list[str] = []

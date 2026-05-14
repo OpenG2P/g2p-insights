@@ -11,7 +11,15 @@ export type AskStatus =
   | "ok"
   | "needs_clarification"
   | "needs_confirmation"
-  | "rejected";
+  | "rejected"
+  | "expert_redirect";
+
+export interface ExpertRedirect {
+  kind: "expert_redirect";
+  function: string;
+  suggested_params: Record<string, unknown>;
+  explanation: string;
+}
 
 export interface ClarifyOption { id: string; label: string; description?: string }
 
@@ -66,6 +74,7 @@ export interface AskResponse {
   status: AskStatus;
   session_id: string;
   clarification?: Clarification | null;
+  expert_redirect?: ExpertRedirect | null;
   sql?: string | null;
   cost?: Cost | null;
   rows: Record<string, unknown>[];
