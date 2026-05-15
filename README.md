@@ -510,9 +510,21 @@ pre-filled via `sessionStorage`.
 LLM composes a plain-text answer from the schema/system info already in
 its prompt. No SQL.
 
-### Flow B — NL-driven Superset chart authoring
+### Flow B — Superset dashboards (embedded) + NL chart authoring
 
-Two endpoints, three frontend actions:
+The Dashboards page has two complementary surfaces:
+
+1. **Embedded view of existing Superset dashboards** — Insight lists every
+   dashboard the service account can see; clicking one renders it in-place
+   via `@superset-ui/embedded-sdk` (short-lived guest tokens minted by our
+   backend). The user never navigates to Superset. See
+   [docs/dashboards-embedded.md](docs/dashboards-embedded.md) for setup and
+   how guest tokens work.
+
+2. **NL chart authoring** — the "Add chart from natural language" affordance
+   on the Dashboards page builds an Intent JSON from the user's question,
+   previews it locally, and pushes the saved chart to Superset via REST.
+   Two endpoints, three frontend actions:
 
 ```
 Step 1 ── Browser → POST /dashboards/charts/preview {question}

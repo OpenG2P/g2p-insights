@@ -39,7 +39,8 @@ export default function App() {
         <Content style={{ padding: 24 }}>
           <Routes>
             <Route path="/" element={<Navigate to="/dashboards" replace />} />
-            <Route path="/dashboards/*" element={<Dashboards />} />
+            <Route path="/dashboards" element={<Dashboards />} />
+            <Route path="/dashboards/:embeddedUuid" element={<Dashboards />} />
             <Route path="/ask"          element={<Ask />} />
             <Route path="/expert"       element={<ExpertLab />} />
             <Route path="/catalog"      element={<Catalog />} />

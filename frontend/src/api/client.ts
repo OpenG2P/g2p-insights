@@ -124,6 +124,39 @@ export async function confirm(payload: {
   return data;
 }
 
+// ---------------- Embedded dashboards ----------------------------------------
+
+export interface DashboardListing {
+  id: number;
+  uuid: string;
+  title: string;
+  slug?: string | null;
+  status: string;
+  embedded_uuid: string | null;   // null until embedding is enabled
+  changed_on?: string | null;
+}
+
+export async function listDashboards() {
+  const { data } = await api.get<{ dashboards: DashboardListing[]; error?: string }>(
+    "/dashboards"
+  );
+  return data;
+}
+
+export async function enableEmbedding(dashboardId: number) {
+  const { data } = await api.post<{ embedded_uuid: string }>(
+    `/dashboards/${dashboardId}/enable-embedding`,
+  );
+  return data;
+}
+
+export async function fetchEmbedToken(embeddedUuid: string) {
+  const { data } = await api.post<{ token: string; embedded_uuid: string }>(
+    `/dashboards/${embeddedUuid}/embed-token`,
+  );
+  return data;
+}
+
 // ---------------- Geo --------------------------------------------------------
 
 export interface GeoLevel { level_id: string; level_mnemonic: string; parent_level_id?: string }
