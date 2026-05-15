@@ -26,6 +26,7 @@ dependencies = [
     "numpy>=1.26",
     "scipy>=1.13",
     "sqlparse>=0.5",
+    "sqlglot>=25.0",
     "orjson>=3.10",
 ]
 

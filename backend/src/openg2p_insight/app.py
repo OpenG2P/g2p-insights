@@ -35,7 +35,7 @@ from .services.masterdata_service import MasterDataService
 from .services.pii_service import PiiService
 from .services.query_executor_service import QueryExecutorService
 from .services.schema_service import SchemaService
-from .services.sql_planner_service import SqlPlannerService
+from .services.sql_validator_service import SqlValidatorService
 from .services.superset_service import SupersetService
 
 _config = Settings.get_config(strict=False)
@@ -50,7 +50,7 @@ class Initializer(CommonInitializer):
         SchemaService()
         PiiService()
         LlmService()
-        SqlPlannerService()
+        SqlValidatorService()
         CostGateService()
         QueryExecutorService()
         AnalyticsService()

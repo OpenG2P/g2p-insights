@@ -21,7 +21,7 @@ from sqlalchemy import text
 
 from ..config import Settings
 from ..utils.sql_safety import StaticIssue, static_analyze
-from .sql_planner_service import PlannedSql
+from .sql_validator_service import ValidatedSql
 
 _config = Settings.get_config(strict=False)
 _logger = logging.getLogger(_config.logging_default_logger_name)
@@ -48,7 +48,7 @@ class CostGateService(BaseService):
         self._green = _config.cost_gate.green
         self._yellow = _config.cost_gate.yellow
 
-    async def assess(self, planned: PlannedSql) -> CostReport:
+    async def assess(self, planned: ValidatedSql) -> CostReport:
         # Stage 1: static
         static_issues: list[StaticIssue] = static_analyze(planned.sql)
         blockers = [i for i in static_issues if i.blocker]

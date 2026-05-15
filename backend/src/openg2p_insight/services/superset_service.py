@@ -2,7 +2,7 @@
 Superset REST client.
 
 Authenticates against the configured Superset instance and creates / attaches
-charts based on Intent-derived form_data.
+charts derived from the SQL the LLM emitted.
 """
 
 from __future__ import annotations
@@ -12,10 +12,12 @@ import logging
 from typing import Optional
 
 import httpx
+import sqlglot
 from openg2p_fastapi_common.service import BaseService
+from sqlglot import exp
 
 from ..config import Settings
-from .llm_service import Intent
+from .llm_service import VizSpec
 
 _config = Settings.get_config(strict=False)
 _logger = logging.getLogger(_config.logging_default_logger_name)
@@ -45,18 +47,26 @@ class SupersetService(BaseService):
 
     # ---------- public API ---------------------------------------------------
 
-    def build_form_data(self, intent: Intent) -> dict:
-        viz_type = _VIZ_TO_SUPERSET.get(intent.viz.type, "table")
+    def build_form_data(self, sql: str, viz: VizSpec) -> dict:
+        """Best-effort translation of an LLM-emitted SELECT + viz spec into a
+        Superset chart form_data dict. We parse the SQL with sqlglot to pull
+        out GROUP BY columns and the first aggregate expression — enough for
+        bar / pie / metric_card charts on a single dataset.
+
+        Charts that need richer specs (multiple metrics, cross-filters, time
+        windows) are still best authored in Superset directly."""
+        chart = _extract_chart_shape(sql)
+        viz_type = _VIZ_TO_SUPERSET.get(viz.type, "table")
         return {
             "viz_type": viz_type,
             "datasource_type": "table",
-            "groupby": intent.group_by,
-            "metric": intent.metric,
-            "row_limit": intent.limit or 1000,
-            "x_axis": intent.viz.x,
-            "y_axis": intent.viz.y,
-            "title": intent.viz.title,
-            **intent.viz.extra,
+            "groupby": chart["groupby"],
+            "metric": chart["metric"],
+            "row_limit": chart["limit"] or 1000,
+            "x_axis": viz.x,
+            "y_axis": viz.y,
+            "title": viz.title,
+            **viz.extra,
         }
 
     async def create_chart(self, name: str, form_data: dict, dataset: str) -> int:
@@ -235,3 +245,38 @@ class SupersetService(BaseService):
         if not rows:
             raise ValueError(f"Dataset '{dataset}' not found in Superset")
         return rows[0]["id"]
+
+
+_AGG_FN = (exp.Sum, exp.Avg, exp.Min, exp.Max, exp.Count)
+
+
+def _extract_chart_shape(sql: str) -> dict:
+    """Pull GROUP BY columns, the first aggregate metric, and LIMIT out of
+    a SELECT for Superset form_data. Returns sensible empties when sqlglot
+    can't parse — the chart can still save, just less informatively."""
+    out = {"groupby": [], "metric": "count", "limit": None}
+    try:
+        tree = sqlglot.parse_one(sql, read="postgres")
+    except Exception:  # noqa: BLE001
+        return out
+    if not isinstance(tree, exp.Select):
+        return out
+
+    group = tree.find(exp.Group)
+    if group is not None:
+        out["groupby"] = [e.name for e in group.expressions if isinstance(e, exp.Column)]
+
+    for expr in tree.expressions:
+        inner = expr.this if isinstance(expr, exp.Alias) else expr
+        if isinstance(inner, _AGG_FN):
+            # e.g. "AVG(monthly_income)" → just record the function name; the
+            # caller stores the SQL verbatim for the source of truth.
+            out["metric"] = inner.sql(dialect="postgres").lower()
+            break
+
+    if tree.args.get("limit") is not None:
+        try:
+            out["limit"] = int(tree.args["limit"].expression.this)
+        except Exception:  # noqa: BLE001
+            pass
+    return out

@@ -1,12 +1,11 @@
 """
-Test the LLM service's clarification path with a mocked Anthropic client.
+Test the LLM service's tool-dispatch contract with a mocked Anthropic client.
 
-The point is to lock in the contract:
-  * If the model calls `request_clarification`, the service returns a
-    `Clarification`.
-  * If the model calls `propose_intent`, the service returns an `Intent`.
-  * If the model returns no tool call, the service returns a generic
-    `Clarification` rather than guessing.
+The point is to lock in the routing:
+  * `request_clarification` → returns `Clarification`.
+  * `propose_sql`           → returns `SqlPlan`.
+  * No tool call            → returns a generic `Clarification` rather than
+                              guessing.
 """
 
 from __future__ import annotations
@@ -17,8 +16,8 @@ import pytest
 
 from openg2p_insight.services.llm_service import (
     Clarification,
-    Intent,
     LlmService,
+    SqlPlan,
 )
 from openg2p_insight.services.schema_service import ColumnSpec, TableSpec
 
@@ -57,7 +56,7 @@ def _table() -> TableSpec:
 def _svc_with_client(client) -> LlmService:
     svc = LlmService.__new__(LlmService)
     svc._client = client
-    svc._provider = "anthropic"   # stub mimics Anthropic's response shape
+    svc._provider = "anthropic"
     return svc
 
 
@@ -88,19 +87,19 @@ async def test_clarification_path():
 
 
 @pytest.mark.asyncio
-async def test_intent_path():
+async def test_sql_plan_path():
     client = _StubClient(
         [
             _Block(
                 "tool_use",
-                "propose_intent",
+                "propose_sql",
                 {
-                    "intent": "aggregate",
-                    "metric": "count",
-                    "entity": "mv_individuals_summary",
-                    "filters": [{"col": "gender", "op": "eq", "val": "F"}],
-                    "group_by": ["region_code"],
-                    "viz": {"type": "bar", "x": "region_code", "y": "count"},
+                    "sql": (
+                        "SELECT region_code, COUNT(*) AS total "
+                        "FROM mv_individuals_summary "
+                        "WHERE gender = 'F' GROUP BY region_code"
+                    ),
+                    "viz": {"type": "bar", "x": "region_code", "y": "total"},
                     "assumptions": ["Used individual gender column"],
                 },
             )
@@ -108,9 +107,9 @@ async def test_intent_path():
     )
     svc = _svc_with_client(client)
     result = await svc.plan("Count women by region", [_table()], history=[])
-    assert isinstance(result, Intent)
-    assert result.entity == "mv_individuals_summary"
-    assert result.group_by == ["region_code"]
+    assert isinstance(result, SqlPlan)
+    assert "mv_individuals_summary" in result.sql
+    assert result.viz.type == "bar"
 
 
 @pytest.mark.asyncio

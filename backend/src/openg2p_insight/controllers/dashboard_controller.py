@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from fastapi import HTTPException
 from openg2p_fastapi_common.controller import BaseController
 
 from ..schemas.superset import (
@@ -10,11 +11,11 @@ from ..schemas.superset import (
     SaveChartRequest,
 )
 from ..services.cost_gate_service import CostGateService
-from ..services.llm_service import LlmService
+from ..services.llm_service import Clarification, DirectAnswer, ExpertRedirect, LlmService, SqlPlan
 from ..services.pii_service import PiiService
 from ..services.query_executor_service import QueryExecutorService
 from ..services.schema_service import SchemaService
-from ..services.sql_planner_service import SqlPlannerService
+from ..services.sql_validator_service import SqlValidationError, SqlValidatorService
 from ..services.superset_service import SupersetService
 
 
@@ -26,7 +27,7 @@ class DashboardController(BaseController):
         self._pii = PiiService.get_component()
         self._schema = SchemaService.get_component()
         self._llm = LlmService.get_component()
-        self._planner = SqlPlannerService.get_component()
+        self._validator = SqlValidatorService.get_component()
         self._cost = CostGateService.get_component()
         self._exec = QueryExecutorService.get_component()
         self._superset = SupersetService.get_component()
@@ -35,19 +36,36 @@ class DashboardController(BaseController):
         async def preview(req: AuthorChartRequest) -> AuthorChartResponse:
             sanitized = self._pii.sanitize(req.question)
             schemas = await self._schema.retrieve_relevant(sanitized.text)
-            intent = await self._llm.plan_chart(sanitized.text, schemas)
-            planned = self._planner.build(intent, sanitized.placeholder_map)
-            cost = await self._cost.assess(planned)
-            preview_rows = await self._exec.run(planned, group_by=intent.group_by, preview=True)
-            form_data = self._superset.build_form_data(intent)
+            plan = await self._llm.plan(sanitized.text, schemas)
+
+            # Chart authoring only flows through `propose_sql`; if the LLM
+            # picked any other tool we surface a 400 rather than guess.
+            if isinstance(plan, (Clarification, DirectAnswer, ExpertRedirect)):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "The question doesn't translate to a chart query. "
+                        "Try a more concrete data question (e.g. 'pie chart of gender')."
+                    ),
+                )
+            sql_plan: SqlPlan = plan
+
+            try:
+                validated = self._validator.validate(sql_plan.sql, sanitized.placeholder_map)
+            except SqlValidationError as exc:
+                raise HTTPException(status_code=400, detail=f"Generated SQL was rejected: {exc}")
+
+            cost = await self._cost.assess(validated)
+            preview_rows = await self._exec.run(validated, preview=True)
+            form_data = self._superset.build_form_data(validated.sql, sql_plan.viz)
             return AuthorChartResponse(
                 status="preview",
                 cost=cost,
                 form_data=form_data,
-                viz_spec=intent.viz,
+                viz_spec=sql_plan.viz,
                 preview_rows=preview_rows.rows,
-                assumptions=intent.assumptions,
-                sql=str(planned),
+                assumptions=sql_plan.assumptions,
+                sql=validated.sql,
             )
 
         @self.router.post("/dashboards/charts/save", response_model=AuthorChartResponse)

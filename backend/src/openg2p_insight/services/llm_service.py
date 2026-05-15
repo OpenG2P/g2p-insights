@@ -1,8 +1,8 @@
 """
 Claude / OpenAI-compatible orchestrator with tool-use + clarification support.
 
-Two provider paths share the same Pydantic result types (`Intent` /
-`Clarification`):
+Two provider paths share the same Pydantic result types (`SqlPlan` /
+`Clarification` / `DirectAnswer` / `ExpertRedirect`):
 
   * `anthropic`         — native Claude SDK
   * `openai_compatible` — any provider with an OpenAI-compatible
@@ -24,12 +24,12 @@ from openg2p_fastapi_common.service import BaseService
 from pydantic import BaseModel, Field
 
 from ..config import Settings
-from ..prompts.nl_to_intent import (
+from ..prompts.nl_to_sql import (
     CLARIFY_TOOL_SCHEMA,
     DIRECT_ANSWER_TOOL_SCHEMA,
     EXPERT_REDIRECT_TOOL_SCHEMA,
-    INTENT_TOOL_SCHEMA,
-    NL_TO_INTENT_SYSTEM,
+    NL_TO_SQL_SYSTEM,
+    PROPOSE_SQL_TOOL_SCHEMA,
 )
 from .schema_service import TableSpec
 
@@ -40,13 +40,6 @@ _logger = logging.getLogger(_config.logging_default_logger_name)
 # -----------------------------------------------------------------------------
 # Result types
 # -----------------------------------------------------------------------------
-class Filter(BaseModel):
-    col: str
-    op: str
-    val: object
-    note: Optional[str] = None
-
-
 class VizSpec(BaseModel):
     type: str = "table"
     x: Optional[str] = None
@@ -60,17 +53,13 @@ class VizSpec(BaseModel):
     applies_reason: Optional[str] = None
 
 
-class Intent(BaseModel):
-    kind: Literal["intent"] = "intent"
-    intent: str = "aggregate"
-    metric: str = "count"
-    metric_column: Optional[str] = None
-    entity: str
-    filters: List[Filter] = Field(default_factory=list)
-    group_by: List[str] = Field(default_factory=list)
-    order_by: List[str] = Field(default_factory=list)
-    limit: Optional[int] = None
-    viz: VizSpec = VizSpec()
+class SqlPlan(BaseModel):
+    """LLM-emitted SQL plan. The backend validates the SQL against the
+    allow-listed catalog before running it."""
+
+    kind: Literal["sql_plan"] = "sql_plan"
+    sql: str
+    viz: VizSpec = Field(default_factory=VizSpec)
     assumptions: List[str] = Field(default_factory=list)
 
 
@@ -112,7 +101,7 @@ class DirectAnswer(BaseModel):
     source: Literal["catalog", "system_info", "other"] = "catalog"
 
 
-PlanResult = Union[Intent, Clarification, ExpertRedirect, DirectAnswer]
+PlanResult = Union[SqlPlan, Clarification, ExpertRedirect, DirectAnswer]
 
 
 class ConvMessage(BaseModel):
@@ -136,14 +125,14 @@ def _anthropic_to_openai_tool(t: dict) -> dict:
 
 
 _OPENAI_TOOLS = [
-    _anthropic_to_openai_tool(INTENT_TOOL_SCHEMA),
+    _anthropic_to_openai_tool(PROPOSE_SQL_TOOL_SCHEMA),
     _anthropic_to_openai_tool(CLARIFY_TOOL_SCHEMA),
     _anthropic_to_openai_tool(EXPERT_REDIRECT_TOOL_SCHEMA),
     _anthropic_to_openai_tool(DIRECT_ANSWER_TOOL_SCHEMA),
 ]
 
 _ANTHROPIC_TOOLS = [
-    INTENT_TOOL_SCHEMA,
+    PROPOSE_SQL_TOOL_SCHEMA,
     CLARIFY_TOOL_SCHEMA,
     EXPERT_REDIRECT_TOOL_SCHEMA,
     DIRECT_ANSWER_TOOL_SCHEMA,
@@ -214,16 +203,11 @@ class LlmService(BaseService):
         history: Optional[List[ConvMessage]] = None,
     ) -> PlanResult:
         if self._client is None:
-            return self._fallback_intent(tables)
+            return self._fallback_plan(tables)
 
         if self._provider == "openai_compatible":
             return await self._plan_openai(sanitized_question, tables, history or [])
         return await self._plan_anthropic(sanitized_question, tables, history or [])
-
-    async def plan_chart(
-        self, sanitized_question: str, tables: List[TableSpec]
-    ) -> PlanResult:
-        return await self.plan(sanitized_question, tables)
 
     # ---------------------- Anthropic path ----------------------------------
 
@@ -237,7 +221,7 @@ class LlmService(BaseService):
         response = await self._client.messages.create(
             model=_config.llm.model,
             max_tokens=_config.llm.max_tokens,
-            system=NL_TO_INTENT_SYSTEM,
+            system=NL_TO_SQL_SYSTEM,
             tools=_ANTHROPIC_TOOLS,
             messages=messages,
         )
@@ -246,14 +230,14 @@ class LlmService(BaseService):
                 continue
             if block.name == "request_clarification":
                 return Clarification.model_validate(block.input)
-            if block.name == "propose_intent":
-                return Intent.model_validate(block.input)
+            if block.name == "propose_sql":
+                return SqlPlan.model_validate(block.input)
             if block.name == "propose_expert_redirect":
                 return ExpertRedirect.model_validate(block.input)
             if block.name == "propose_direct_answer":
                 return DirectAnswer.model_validate(block.input)
         return Clarification(
-            question="Could you tell me which table or metric you have in mind?",
+            question="Could you rephrase or be more specific about which data you're after?",
             context="model_did_not_select_tool",
             options=[],
         )
@@ -286,8 +270,8 @@ class LlmService(BaseService):
                 continue
             if name == "request_clarification":
                 return Clarification.model_validate(args)
-            if name == "propose_intent":
-                return Intent.model_validate(args)
+            if name == "propose_sql":
+                return SqlPlan.model_validate(args)
             if name == "propose_expert_redirect":
                 return ExpertRedirect.model_validate(args)
             if name == "propose_direct_answer":
@@ -299,7 +283,7 @@ class LlmService(BaseService):
             getattr(msg, "content", None),
         )
         return Clarification(
-            question="Could you tell me which table or metric you have in mind?",
+            question="Could you rephrase or be more specific about which data you're after?",
             context="model_did_not_select_tool",
             options=[],
         )
@@ -323,8 +307,10 @@ class LlmService(BaseService):
         msgs.append({
             "role": "user",
             "content": (
-                "Call exactly one tool: `propose_intent` if you can commit, "
-                "otherwise `request_clarification`."
+                "Call exactly one tool: `propose_sql` if you can write a "
+                "safe SELECT, `propose_direct_answer` for a meta-question, "
+                "`propose_expert_redirect` for statistical analysis, "
+                "or `request_clarification`."
             ),
         })
         return msgs
@@ -337,7 +323,7 @@ class LlmService(BaseService):
     ) -> list[dict]:
         schema_blob = self._schema_blob(tables)
         msgs: list[dict] = [
-            {"role": "system", "content": NL_TO_INTENT_SYSTEM},
+            {"role": "system", "content": NL_TO_SQL_SYSTEM},
             {
                 "role": "user",
                 "content": (
@@ -351,8 +337,10 @@ class LlmService(BaseService):
         msgs.append({
             "role": "user",
             "content": (
-                "Call exactly one tool: `propose_intent` if you can commit, "
-                "otherwise `request_clarification`."
+                "Call exactly one tool: `propose_sql` if you can write a "
+                "safe SELECT, `propose_direct_answer` for a meta-question, "
+                "`propose_expert_redirect` for statistical analysis, "
+                "or `request_clarification`."
             ),
         })
         return msgs
@@ -387,10 +375,13 @@ class LlmService(BaseService):
         return "\n".join(rows)
 
     @staticmethod
-    def _fallback_intent(tables: List[TableSpec]) -> Intent:
+    def _fallback_plan(tables: List[TableSpec]) -> SqlPlan:
+        """When the LLM client isn't configured, return a trivial COUNT against
+        the first allow-listed table so the rest of the pipeline keeps working
+        in dev / CI without an API key."""
         entity = tables[0].name if tables else "v_individuals_safe"
-        return Intent(
-            entity=entity,
-            viz=VizSpec(type="table"),
-            assumptions=["LLM unavailable — deterministic fallback intent"],
+        return SqlPlan(
+            sql=f"SELECT COUNT(*) AS total FROM {entity}",
+            viz=VizSpec(type="metric_card", title="Row count"),
+            assumptions=["LLM unavailable — deterministic fallback SQL"],
         )

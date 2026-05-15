@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Iterable, List, Tuple
 
-# Keep in sync with sql_planner_service.K_COUNT_COL.
+# Keep in sync with sql_validator_service.K_COUNT_COL.
 K_COUNT_COL = "_k_count"
 
 
