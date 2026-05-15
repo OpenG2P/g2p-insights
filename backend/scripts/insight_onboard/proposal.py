@@ -46,6 +46,13 @@ class Proposal:
     analytical_tables: List[ProposalTable]
     materialized_views: List[ProposalMaterializedView]
     pii_columns_in_source: List[Dict[str, str]] = field(default_factory=list)
+    # Where the safe layer lives vs. where the registry tables live. The
+    # dedicated target schema keeps the analytical surface isolated and lets
+    # us grant the AI role USAGE on `target_schema` without ever touching
+    # the source schema. The role's `search_path` is set to `target_schema`
+    # so unqualified LLM-emitted SQL resolves to the safe views.
+    source_schema: str = "public"
+    target_schema: str = "insight_safe"
 
 
 def proposal_to_yaml(p: Proposal) -> str:
@@ -63,6 +70,8 @@ def proposal_to_yaml(p: Proposal) -> str:
         {
             "metadata": p.metadata,
             "deployment": p.deployment,
+            "source_schema": p.source_schema,
+            "target_schema": p.target_schema,
             "skipped": p.skipped,
             "analytical_tables": [
                 {
@@ -78,6 +87,24 @@ def proposal_to_yaml(p: Proposal) -> str:
         sort_keys=False,
         allow_unicode=True,
     ))
+    parts.append("\n")
+    parts.append(
+        "# ---------------------------------------------------------------------\n"
+        "# Aggregate materialized views — TODO, declarative grammar (not yet\n"
+        "# emitted by the codegen). Hand-edit if you want a rollup MV today.\n"
+        "# ---------------------------------------------------------------------\n"
+        "# materialized_views:\n"
+        "#   - name: mv_district_aggregates\n"
+        "#     description: Pre-aggregated counts by region/zone/woreda × demographics.\n"
+        "#     sources: [v_individuals_safe]\n"
+        "#     dimensions: [region_code, zone_code, woreda_code, gender, age_bracket]\n"
+        "#     metrics:\n"
+        "#       - {expr: \"COUNT(*)\",                       alias: total}\n"
+        "#       - {expr: \"AVG(pmt_score)::NUMERIC(6,2)\",    alias: avg_pmt}\n"
+        "#       - {expr: \"AVG(monthly_income)::NUMERIC(12,2)\", alias: avg_income}\n"
+        "#     indexes: [region_code]\n"
+        "#     refresh: \"daily at 02:30 UTC\"\n"
+    )
     return "".join(parts)
 
 
@@ -100,6 +127,8 @@ def load_proposal(path: str) -> Proposal:
             ProposalMaterializedView(**mv) for mv in data.get("materialized_views", [])
         ],
         pii_columns_in_source=data.get("pii_columns_in_source", []),
+        source_schema=data.get("source_schema", "public"),
+        target_schema=data.get("target_schema", "insight_safe"),
     )
 
 

@@ -28,6 +28,7 @@ from .ddl import (
     ddl_for_materialized_views,
     ddl_for_role_and_grants,
     ddl_for_safe_views,
+    ddl_for_target_schema,
     generate_password,
     operational_catalog,
 )
@@ -36,15 +37,16 @@ from .heuristics import (
     ColumnStats,
     classify_by_name,
     classify_by_sample,
+    classify_by_type,
     classify_skip_table,
     combine_classifications,
+    load_rules,
 )
-from .inspector import column_stats, list_columns, list_foreign_keys, list_tables
+from .inspector import column_stats, list_columns, list_tables
 from .llm_classifier import classify_via_llm
 from .proposal import (
     Proposal,
     ProposalColumn,
-    ProposalMaterializedView,
     ProposalTable,
     load_proposal,
     proposal_to_yaml,
@@ -60,28 +62,40 @@ _logger = logging.getLogger("insight_onboard")
 # =============================================================================
 async def cmd_scan(args: argparse.Namespace) -> int:
     print(f"[scan] connecting to {_safe_dsn(args.registry_db)}")
+    print(f"[scan]   source schema: {args.source_schema}")
+    print(f"[scan]   target schema (safe layer): {args.target_schema}")
+    rules = load_rules(getattr(args, "pii_rules", None))
+    if getattr(args, "pii_rules", None):
+        print(f"[scan]   PII rules: {args.pii_rules}")
     with psycopg.connect(args.registry_db) as conn:
-        tables = list_tables(conn)
-        print(f"[scan] found {len(tables)} tables")
+        tables = list_tables(conn, schema=args.source_schema)
+        print(f"[scan] found {len(tables)} tables in {args.source_schema}")
 
         skipped: List[dict] = []
         analytical: List[ProposalTable] = []
         ambiguous: List[ColumnStats] = []   # for optional LLM pass
 
         for t in tables:
-            reason = classify_skip_table(t)
+            reason = classify_skip_table(t, rules=rules)
             if reason:
                 skipped.append({"name": t, "reason": reason})
                 continue
             print(f"[scan]   inspecting {t}")
-            cols = list_columns(conn, t)
+            cols = list_columns(conn, t, schema=args.source_schema)
             prop_cols = []
             for c in cols:
-                stats = column_stats(conn, t, c["name"], c["pg_type"], c["nullable"])
-                cls, conf, reason_str = combine_classifications(
-                    classify_by_name(c["name"]),
-                    classify_by_sample(stats),
+                stats = column_stats(
+                    conn, t, c["name"], c["pg_type"], c["nullable"],
+                    schema=args.source_schema,
                 )
+                type_verdict = classify_by_type(c["pg_type"])
+                if type_verdict is not None:
+                    cls, conf, reason_str = type_verdict
+                else:
+                    cls, conf, reason_str = combine_classifications(
+                        classify_by_name(c["name"], rules=rules),
+                        classify_by_sample(stats),
+                    )
                 # Decide `keep` from classification: pii -> drop, others -> keep.
                 if cls == "pii":
                     keep: bool | str = False
@@ -126,9 +140,10 @@ async def cmd_scan(args: argparse.Namespace) -> int:
                             col.confidence = "llm"
                             col.reason = reason_str
 
-        # Foreign-key driven materialised-view suggestion
-        fks = list_foreign_keys(conn)
-        mvs = _suggest_materialized_views(analytical, fks)
+    # Aggregate materialized views are TODO — see the declarative grammar
+    # block at the end of the generated proposal YAML. Operators who need
+    # an MV today can hand-add one to the proposal before `apply`.
+    mvs: List = []
 
     pii_source = []
     for t in analytical:
@@ -151,6 +166,8 @@ async def cmd_scan(args: argparse.Namespace) -> int:
         analytical_tables=analytical,
         materialized_views=mvs,
         pii_columns_in_source=pii_source,
+        source_schema=args.source_schema,
+        target_schema=args.target_schema,
     )
 
     out_path = args.out
@@ -166,59 +183,6 @@ async def cmd_scan(args: argparse.Namespace) -> int:
     print()
     print(f"Next: review {out_path}, then run `insight-onboard apply {out_path}`")
     return 0
-
-
-def _suggest_materialized_views(
-    tables: List[ProposalTable], fks
-) -> List[ProposalMaterializedView]:
-    """Very simple heuristic: if we see a 'register_individuals' style + a
-    'register_households' style with a FK between them, suggest
-    mv_individuals_summary. If there are geographic columns, suggest a
-    district rollup. Both are starting points — user can edit/remove."""
-    individuals = next((t for t in tables if "individual" in t.source.lower()), None)
-    households = next((t for t in tables if "household" in t.source.lower()), None)
-    mvs: List[ProposalMaterializedView] = []
-
-    if individuals:
-        join_clause = (
-            f"SELECT i.*"
-            + (", h.headship_type, h.household_size, h.monthly_income AS household_monthly_income"
-               if households else "")
-            + f"\nFROM \"{individuals.safe_view_name}\" i"
-            + (f"\nLEFT JOIN \"{households.safe_view_name}\" h ON h.id = i.household_id"
-               if households else "")
-        )
-        geo_cols = [c.name for c in individuals.columns
-                    if c.keep and any(g in c.name.lower() for g in ("region", "zone", "woreda", "kebele"))]
-        mvs.append(ProposalMaterializedView(
-            name="mv_individuals_summary",
-            description="Individuals joined with household-level fields; refresh nightly",
-            sources=[individuals.safe_view_name] + ([households.safe_view_name] if households else []),
-            join=join_clause,
-            indexes=[c.name for c in individuals.columns
-                     if c.keep and c.name in geo_cols + ["gender", "age_bracket", "pmt_score"]],
-            refresh="daily at 02:00 UTC",
-        ))
-
-        # District rollup if we have at least region + woreda
-        if geo_cols and "region_code" in [c.name for c in individuals.columns]:
-            mvs.append(ProposalMaterializedView(
-                name="mv_district_aggregates",
-                description="Pre-aggregated counts by geo × demographics — use for district-level questions",
-                sources=["mv_individuals_summary"],
-                join=(
-                    "SELECT region_code, zone_code, woreda_code,\n"
-                    "       gender, age_bracket,\n"
-                    "       COUNT(*) AS total,\n"
-                    "       AVG(pmt_score)::NUMERIC(6,2) AS avg_pmt,\n"
-                    "       AVG(monthly_income)::NUMERIC(12,2) AS avg_income\n"
-                    "FROM mv_individuals_summary\n"
-                    "GROUP BY region_code, zone_code, woreda_code, gender, age_bracket"
-                ),
-                indexes=["region_code"],
-                refresh="daily at 02:30 UTC",
-            ))
-    return mvs
 
 
 # =============================================================================
@@ -238,6 +202,7 @@ async def cmd_apply(args: argparse.Namespace) -> int:
     role_password = args.role_password or generate_password()
 
     sql_blocks: List[str] = []
+    sql_blocks.extend(ddl_for_target_schema(p))
     sql_blocks.extend(ddl_for_safe_views(p))
     sql_blocks.extend(ddl_for_materialized_views(p))
     sql_blocks.extend(ddl_for_role_and_grants(p, role_name, role_password, db_name))
@@ -322,14 +287,19 @@ async def cmd_audit(args: argparse.Namespace) -> int:
 
 
 def _run_audit(dsn: str, role: str, p: Proposal) -> List[tuple]:
+    """Confirm the AI role cannot see any column listed in
+    `pii_columns_in_source`. We scan BOTH the source schema (in case the
+    role has any unexpected grants left over) AND the target schema (in
+    case a safe-view definition accidentally re-projected a PII column)."""
     pii_set = {(d["table"], d["column"]) for d in p.pii_columns_in_source}
+    schemas = sorted({p.source_schema, p.target_schema})
+    schema_in = ", ".join(f"'{s}'" for s in schemas)
     with psycopg.connect(dsn) as conn:
         with conn.cursor() as cur:
-            # Set role via SET ROLE; runs in same session.
             cur.execute(f'SET ROLE "{role}"')
             cur.execute(
                 "SELECT table_name, column_name FROM information_schema.columns "
-                "WHERE table_schema = 'public'"
+                f"WHERE table_schema IN ({schema_in})"
             )
             visible = [(t, c) for t, c in cur.fetchall()]
             cur.execute("RESET ROLE")
@@ -376,6 +346,13 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--out", default="proposal.yaml")
     sc.add_argument("--use-llm", action="store_true",
                     help="Consult the LLM (INSIGHT_LLM__* env vars) for columns the heuristics couldn't classify.")
+    sc.add_argument("--source-schema", default="public",
+                    help="Schema where the registry tables live. Default: public.")
+    sc.add_argument("--target-schema", default="insight_safe",
+                    help="Schema where the safe layer (v_*_safe views) will be created. Default: insight_safe.")
+    sc.add_argument("--pii-rules", default=None,
+                    help="Path to a YAML file overriding the default PII/quasi/safe keyword rules. "
+                         "Sections omitted from the override fall back to the bundled defaults.")
 
     ap = sub.add_parser("apply", help="Apply a reviewed proposal: create views, role, grants, catalog, Helm overlay.")
     ap.add_argument("proposal", help="Path to the reviewed proposal YAML.")

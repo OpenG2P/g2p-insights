@@ -85,43 +85,66 @@ def column_stats(
     fq = f'"{schema}"."{table}"."{column}"'
     table_fq = f'"{schema}"."{table}"'
 
-    with conn.cursor() as cur:
-        # n_distinct from pg_stats is approximate and cheap; fall back to
-        # COUNT DISTINCT when it's not yet populated.
-        cur.execute(
-            "SELECT n_distinct, null_frac FROM pg_stats "
-            "WHERE schemaname=%s AND tablename=%s AND attname=%s",
-            (schema, table, column),
-        )
-        row = cur.fetchone()
-        if row is None or row[0] is None:
-            cur.execute(f"SELECT COUNT(DISTINCT {fq.split('.')[-1]}), "
-                        f"AVG(CASE WHEN {fq.split('.')[-1]} IS NULL THEN 1 ELSE 0 END) "
-                        f"FROM {table_fq}")
-            distinct_count, null_rate = cur.fetchone()
-            null_rate = float(null_rate or 0)
-        else:
-            n_distinct, null_frac = row
-            null_rate = float(null_frac or 0)
-            if n_distinct < 0:
-                # Negative n_distinct means fraction-of-rows-are-distinct;
-                # convert to absolute using table reltuples.
-                cur.execute("SELECT reltuples::bigint FROM pg_class "
-                            "WHERE oid = (%s::regclass)", (f"{schema}.{table}",))
-                reltuples = cur.fetchone()[0] or 0
-                distinct_count = int(reltuples * abs(n_distinct))
-            else:
-                distinct_count = int(n_distinct)
+    # JSON / JSONB / bytea and a few other types have no default equality
+    # operator, so COUNT(DISTINCT col) and SELECT DISTINCT col raise
+    # `UndefinedFunction`. We treat these as "no stats" — caller still gets
+    # a usable ColumnStats and the type-aware classifier downstream tags
+    # them as non-analytical anyway.
+    no_distinct_types = {"json", "jsonb", "bytea", "xml", "tsvector", "tsquery", "hstore"}
+    skip_distinct = pg_type.lower() in no_distinct_types
 
-        # Pull up to N distinct non-null samples. Cast to text so we get a
-        # consistent shape for pattern detection.
-        col_ident = f'"{column}"'
-        cur.execute(
-            f"SELECT DISTINCT {col_ident}::text "
-            f"FROM {table_fq} WHERE {col_ident} IS NOT NULL LIMIT %s",
-            (sample_n,),
-        )
-        samples = [r[0] for r in cur.fetchall() if r[0] is not None]
+    distinct_count = 0
+    null_rate = 0.0
+    samples: List[str] = []
+
+    with conn.cursor() as cur:
+        if not skip_distinct:
+            # n_distinct from pg_stats is approximate and cheap; fall back
+            # to COUNT(DISTINCT) when it's not yet populated.
+            cur.execute(
+                "SELECT n_distinct, null_frac FROM pg_stats "
+                "WHERE schemaname=%s AND tablename=%s AND attname=%s",
+                (schema, table, column),
+            )
+            row = cur.fetchone()
+            if row is None or row[0] is None:
+                try:
+                    col_ident = f'"{column}"'
+                    cur.execute(
+                        f"SELECT COUNT(DISTINCT {col_ident}), "
+                        f"AVG(CASE WHEN {col_ident} IS NULL THEN 1 ELSE 0 END) "
+                        f"FROM {table_fq}"
+                    )
+                    distinct_count, null_rate_raw = cur.fetchone()
+                    null_rate = float(null_rate_raw or 0)
+                    distinct_count = int(distinct_count or 0)
+                except psycopg.errors.UndefinedFunction:
+                    # Custom type without an `=` operator — give up on stats.
+                    conn.rollback()
+                    skip_distinct = True
+            else:
+                n_distinct, null_frac = row
+                null_rate = float(null_frac or 0)
+                if n_distinct < 0:
+                    cur.execute("SELECT reltuples::bigint FROM pg_class "
+                                "WHERE oid = (%s::regclass)", (f"{schema}.{table}",))
+                    reltuples = cur.fetchone()[0] or 0
+                    distinct_count = int(reltuples * abs(n_distinct))
+                else:
+                    distinct_count = int(n_distinct)
+
+        if not skip_distinct:
+            try:
+                col_ident = f'"{column}"'
+                cur.execute(
+                    f"SELECT DISTINCT {col_ident}::text "
+                    f"FROM {table_fq} WHERE {col_ident} IS NOT NULL LIMIT %s",
+                    (sample_n,),
+                )
+                samples = [r[0] for r in cur.fetchall() if r[0] is not None]
+            except psycopg.errors.UndefinedFunction:
+                conn.rollback()
+                samples = []
 
     return ColumnStats(
         name=column,

@@ -20,7 +20,19 @@ def generate_password(n: int = 32) -> str:
     return "".join(secrets.choice(alphabet) for _ in range(n))
 
 
-def ddl_for_safe_views(p: Proposal, schema: str = "public") -> List[str]:
+def ddl_for_target_schema(p: Proposal) -> List[str]:
+    """Emit the CREATE SCHEMA block for the dedicated safe-layer schema.
+
+    Kept separate from the view DDL so callers can sequence it before
+    everything that references the schema (views, grants, search_path)."""
+    return [
+        f"-- Dedicated analytical schema — isolates the safe layer from the\n"
+        f"-- registry. The insight_ai role gets USAGE here and only here.\n"
+        f'CREATE SCHEMA IF NOT EXISTS "{p.target_schema}";'
+    ]
+
+
+def ddl_for_safe_views(p: Proposal) -> List[str]:
     out: List[str] = []
     for t in p.analytical_tables:
         kept = [c for c in t.columns if c.keep is True]
@@ -28,17 +40,21 @@ def ddl_for_safe_views(p: Proposal, schema: str = "public") -> List[str]:
             continue
         cols = ",\n    ".join(f'"{c.name}"' for c in kept)
         sql = (
-            f'-- {len(kept)} safe columns from {t.source}; '
+            f'-- {len(kept)} safe columns from {p.source_schema}.{t.source}; '
             f'{len(t.columns) - len(kept)} dropped\n'
-            f'CREATE OR REPLACE VIEW "{schema}"."{t.safe_view_name}" AS\n'
+            f'CREATE OR REPLACE VIEW "{p.target_schema}"."{t.safe_view_name}" AS\n'
             f"SELECT\n    {cols}\n"
-            f'FROM "{schema}"."{t.source}";'
+            f'FROM "{p.source_schema}"."{t.source}";'
         )
         out.append(sql)
     return out
 
 
-def ddl_for_materialized_views(p: Proposal, schema: str = "public") -> List[str]:
+def ddl_for_materialized_views(p: Proposal) -> List[str]:
+    """Materialized views are TODO. Today we keep this entry point so the
+    proposal shape stays stable and operators who hand-write an MV in their
+    proposal still get it emitted. Auto-generation is deferred to the
+    declarative aggregate-MV grammar described in the proposal YAML."""
     out: List[str] = []
     for mv in p.materialized_views:
         if not mv.join:
@@ -46,8 +62,8 @@ def ddl_for_materialized_views(p: Proposal, schema: str = "public") -> List[str]
             continue
         sql = (
             f'-- {mv.description}\n'
-            f'DROP MATERIALIZED VIEW IF EXISTS "{schema}"."{mv.name}";\n'
-            f'CREATE MATERIALIZED VIEW "{schema}"."{mv.name}" AS\n'
+            f'DROP MATERIALIZED VIEW IF EXISTS "{p.target_schema}"."{mv.name}";\n'
+            f'CREATE MATERIALIZED VIEW "{p.target_schema}"."{mv.name}" AS\n'
             f'{mv.join};'
         )
         out.append(sql)
@@ -55,7 +71,7 @@ def ddl_for_materialized_views(p: Proposal, schema: str = "public") -> List[str]
             idx_name = f"ix_{mv.name}_{col}"
             out.append(
                 f'CREATE INDEX IF NOT EXISTS "{idx_name}" '
-                f'ON "{schema}"."{mv.name}"("{col}");'
+                f'ON "{p.target_schema}"."{mv.name}"("{col}");'
             )
     return out
 
@@ -65,8 +81,14 @@ def ddl_for_role_and_grants(
     role_name: str,
     role_password: str,
     db_name: str,
-    schema: str = "public",
 ) -> List[str]:
+    """Create the AI role and grant it access to the safe layer only.
+
+    Key boundary: USAGE is granted on `target_schema` only — NOT on
+    `source_schema`. Without USAGE on the source schema, the role can't
+    reference base tables even if it knew their names. The role's
+    `search_path` is then set to `target_schema` so LLM-emitted SQL that
+    says `FROM mv_individuals_summary` resolves there transparently."""
     out: List[str] = []
     out.append(
         f"-- Recreate role with a fresh password\n"
@@ -74,18 +96,23 @@ def ddl_for_role_and_grants(
         f'CREATE ROLE "{role_name}" LOGIN PASSWORD \'{role_password}\';'
     )
     out.append(f'GRANT CONNECT ON DATABASE "{db_name}" TO "{role_name}";')
-    out.append(f'GRANT USAGE   ON SCHEMA "{schema}" TO "{role_name}";')
+    out.append(f'GRANT USAGE ON SCHEMA "{p.target_schema}" TO "{role_name}";')
 
     safe_targets = [t.safe_view_name for t in p.analytical_tables]
     safe_targets += [mv.name for mv in p.materialized_views]
     for tgt in safe_targets:
-        out.append(f'GRANT SELECT ON "{schema}"."{tgt}" TO "{role_name}";')
+        out.append(
+            f'GRANT SELECT ON "{p.target_schema}"."{tgt}" TO "{role_name}";'
+        )
 
-    # Defense in depth — explicitly revoke any access to source tables that
-    # have PII.
-    pii_source_tables = sorted({t.source for t in p.analytical_tables})
-    for src in pii_source_tables:
-        out.append(f'REVOKE ALL ON "{schema}"."{src}" FROM "{role_name}";')
+    # Default search_path so unqualified table references resolve to the
+    # safe layer. We deliberately don't include the source schema — even
+    # if someone REVOKE'd USAGE from us elsewhere, this guarantees the
+    # role never even *looks* in the registry's schema for a table.
+    out.append(
+        f'ALTER ROLE "{role_name}" '
+        f"SET search_path = \"{p.target_schema}\";"
+    )
 
     out.append(f'ALTER ROLE "{role_name}" SET statement_timeout = \'30s\';')
     out.append(f'ALTER ROLE "{role_name}" SET lock_timeout = \'5s\';')
@@ -111,8 +138,8 @@ def operational_catalog(p: Proposal) -> str:
             })
         tables_out.append({
             "name": t.safe_view_name,
-            "schema": "public",
-            "description": f"PII-safe view over {t.source}",
+            "schema": p.target_schema,
+            "description": f"PII-safe view over {p.source_schema}.{t.source}",
             "columns": cols_out,
         })
 
@@ -120,7 +147,7 @@ def operational_catalog(p: Proposal) -> str:
     for mv in p.materialized_views:
         tables_out.append({
             "name": mv.name,
-            "schema": "public",
+            "schema": p.target_schema,
             "description": mv.description,
             "refresh": mv.refresh,
             "indexed": mv.indexes,
@@ -144,14 +171,16 @@ def operational_catalog(p: Proposal) -> str:
 # -----------------------------------------------------------------------------
 # Audit
 # -----------------------------------------------------------------------------
-def audit_query(role_name: str, schema: str = "public") -> str:
-    """Return a SQL block to run AS the insight_ai role. Lists every table/view
-    visible to it. Caller diffs against `pii_columns_in_source`."""
+def audit_query(role_name: str, schemas: list[str]) -> str:
+    """Return a SQL block to run AS the insight_ai role. Lists every column
+    visible to it across the listed schemas. Caller diffs against
+    `pii_columns_in_source` to confirm no PII leaks."""
+    schema_in = ", ".join(f"'{s}'" for s in schemas)
     return (
         f"SET ROLE \"{role_name}\";\n"
         "SELECT table_schema, table_name, column_name\n"
         "FROM information_schema.columns\n"
-        f"WHERE table_schema = '{schema}'\n"
+        f"WHERE table_schema IN ({schema_in})\n"
         "ORDER BY table_schema, table_name, ordinal_position;\n"
         "RESET ROLE;\n"
     )

@@ -1,0 +1,216 @@
+# Default PII / quasi / safe classification rules for `insight-onboard`.
+#
+# Override with `--pii-rules path/to/your-rules.yaml` to add deployment-
+# specific patterns (e.g. national-ID column names that are local to one
+# country's registry). Custom files MAY define a subset of these sections —
+# any section omitted falls back to the default.
+
+# Column-name tokens (matched after splitting on snake/camel/non-letter
+# boundaries). Single-token hits are high-confidence.
+pii_keywords:
+  - name
+  - fullname
+  - firstname
+  - lastname
+  - middlename
+  - maidenname
+  - surname
+  - phone
+  - mobile
+  - telephone
+  - whatsapp
+  - email
+  - mail
+  - address
+  - street
+  - gps
+  - lat
+  - lng
+  - latitude
+  - longitude
+  - coords
+  - geolocation
+  - foundational    # OpenG2P foundational-ID columns (national-ID equivalent,
+                    # including the *masked* variants — masks are still
+                    # re-identifiable in combination with other quasi-IDs)
+  - biometric
+  - fayda
+  - aadhaar
+  - aadhar
+  - ssn
+  - passport
+  - nrc
+  - nid
+  - cnic
+  - dob
+  - birthdate
+  - iban
+  - mpesa
+  - rid
+  - password
+  - secret
+
+# Multi-token combinations — ALL tokens must be present in the column name.
+# Use for column names where neither token alone is PII but the combination
+# is (e.g. `national_id`, `date_of_birth`).
+pii_multi_token:
+  - {tokens: [date, birth],       reason: "date-of-birth pair"}
+  - {tokens: [national, id],      reason: "national_id pair"}
+  - {tokens: [functional, id],    reason: "functional_id (internal personal identifier)"}
+  - {tokens: [registry, id],      reason: "registry_id (internal personal identifier)"}
+  - {tokens: [internal, record],  reason: "internal record id (personal identifier)"}
+  - {tokens: [functional, record], reason: "functional record id (personal identifier)"}
+  - {tokens: [contact, person],   reason: "contact-person name"}
+  - {tokens: [contact, number],   reason: "contact-number/phone"}
+  - {tokens: [account, number],   reason: "bank-account number"}
+  - {tokens: [exact, age],        reason: "exact age (high re-id risk)"}
+  - {tokens: [api, key],          reason: "credentials"}
+  - {tokens: [plus, code],        reason: "Google Plus Code — encodes location"}
+  - {tokens: [postal, code],      reason: "postal code — re-identifiable area"}
+  - {tokens: [record, image],     reason: "record-image identifier"}
+  - {tokens: [image, storage],    reason: "image-storage identifier"}
+  - {tokens: [search, text],      reason: "search-text aggregation of identifying fields"}
+
+# Quasi-identifiers — kept in the safe view but contribute to k-anonymity
+# suppression.
+quasi_keywords:
+  - age
+  - gender
+  - sex
+  - marital
+  - marriage
+  - ethnicity
+  - caste
+  - race
+  - religion
+  - language
+  - disability
+  - orphanhood
+  - chronic
+  - plw
+  - displacement
+  - refugee
+  - idp
+  - kebele
+  - village
+  - occupation
+  - employment
+
+# Plain analytical columns.
+safe_keywords:
+  - region
+  - zone
+  - woreda
+  - district
+  - province
+  - state
+  - pmt
+  - income
+  - livelihood
+  - livestock
+  - crop
+  - headship
+  - verified
+  - status
+  - level
+  - severity
+  - created
+  - updated
+  - registered
+  - enrolled
+  - count
+  - total
+  - sum
+  - avg
+  - min
+  - max
+  - score
+
+# Safe multi-token combinations — checked BEFORE PII to handle cases like
+# `age_bracket` (where bare `age` would otherwise be classified quasi).
+safe_multi_token:
+  - {tokens: [age, bracket],      reason: "generalised age bracket"}
+  - {tokens: [age, group],        reason: "generalised age group"}
+  - {tokens: [pmt, score],        reason: "PMT score"}
+  - {tokens: [monthly, income],   reason: "monthly income"}
+  - {tokens: [household, size],   reason: "household-size aggregate"}
+  - {tokens: [headship, type],    reason: "headship type"}
+
+# Operational / metadata tables to skip during analytical onboarding.
+# Match is case-insensitive regex against the table name.
+#
+# Patterns reflect the OpenG2P registry-core + NSR conventions. They fall
+# into a few groups:
+#   - Intake forms / raw submissions (pre-validation, mirror the register)
+#   - History tables (point-in-time snapshots of register tables; PII surface
+#     without analytical value)
+#   - Change-request workflow (operational, not analytical)
+#   - Schema / UI / form metadata (definitions, not data)
+#   - Background-job queues, audit logs
+#   - Ingestion / outbound message pipelines
+#   - i18n / theming / configuration tables
+skip_table_patterns:
+  # Intake (pre-register) — mirror register tables, pre-validation.
+  - {pattern: '^g2p_intake_form_',
+     reason: "raw intake submissions — pre-validation, not analytical"}
+
+  # History — both `g2p_register_history_*` (NSR convention, in-middle) and
+  # `*_history` (trailing-suffix). Both are exact mirrors of base tables.
+  - {pattern: '^g2p_register_history_',
+     reason: "history table — exact mirror of base table"}
+  - {pattern: '_history$',
+     reason: "history table — exact mirror of base"}
+
+  # Change-request workflow — operational, not analytical.
+  - {pattern: '^g2p_register_change_request',
+     reason: "change-request workflow — operational"}
+  - {pattern: '^deduplication_',
+     reason: "deduplication tracking — operational"}
+  - {pattern: '^dedup_',
+     reason: "deduplication tracking — operational"}
+
+  # Background-job queues and processing logs.
+  - {pattern: '(?:_|^)queue$',
+     reason: "background-job queue table"}
+  - {pattern: '_log$|_logs$|_audit$',
+     reason: "audit/log table — operational"}
+
+  # Schema / definitions / UI / form metadata.
+  - {pattern: '^g2p_attributes?$|^g2p_attribute_values$',
+     reason: "attribute-schema metadata"}
+  - {pattern: '^g2p_input_mechanisms?$',
+     reason: "input-channel registry — operational"}
+  - {pattern: '^g2p_intake_form_definitions$',
+     reason: "form-definition metadata"}
+  - {pattern: '^g2p_register_(definitions|schemas|sections|ui_)',
+     reason: "register schema / UI metadata — definitions, not data"}
+  - {pattern: '^g2p_register_section_',
+     reason: "register-section metadata — UI/definitions, not data"}
+  - {pattern: '^g2p_register_score_definitions$',
+     reason: "score-formula definitions, not score values"}
+  - {pattern: '^data_models?$',
+     reason: "schema definitions — metadata"}
+
+  # Registry configuration and identity workflows.
+  - {pattern: '^g2p_registry_',
+     reason: "registry configuration — language/theme/import/VC settings"}
+  - {pattern: '^g2p_registrant_',
+     reason: "registrant authentication metadata — operational"}
+
+  # Ingestion / outbound message pipelines (DCI templates, raw payloads).
+  - {pattern: '^incoming_',
+     reason: "ingestion-pipeline staging — pre-register"}
+  - {pattern: '^outgoing_',
+     reason: "outbound-message pipeline staging"}
+  - {pattern: '^import_file_',
+     reason: "file-import pipeline staging"}
+
+  # i18n / theming / activity logs.
+  - {pattern: '^registry_(languages|themes|theme_values)$',
+     reason: "i18n and theming configuration"}
+  - {pattern: '^subscription_',
+     reason: "subscription / activity metadata — operational"}
+
+  # Migrations.
+  - {pattern: '^alembic_version$',
+     reason: "Alembic migration state"}
