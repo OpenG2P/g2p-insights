@@ -303,8 +303,15 @@ g2p-insight/
 > `insight_safe` schema, an `insight_ai` role with SELECT-only grants,
 > the operational catalog YAML, and a Helm values overlay.
 >
+> **After onboarding** — to actually run Insight against the new
+> registry (local-dev `.env` switchover for smoke-test, then the K8s
+> rollout): see
+> [docs/connecting-to-the-new-registry.md](docs/connecting-to-the-new-registry.md).
+> Its top-of-doc "TL;DR — three terminals" block is the fastest path.
+>
 > This section covers the catalog *format*; the runbook is the *recipe*;
-> the CLI is the *automation* over the recipe.
+> the CLI is the *automation* over the recipe; the connecting doc is
+> *how you actually start serving*.
 
 ### Approach
 

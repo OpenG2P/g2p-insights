@@ -402,12 +402,20 @@ helm upgrade --install g2p-insight ./helm/g2p-insight \
 > **Before steps 6 and 7 — get the backend pointed at the new DB.**
 > Steps 1–5 produced the safe layer, the role, the catalog, and the
 > Helm overlay. They didn't yet make a running backend talk to the new
-> registry. For that — local-dev smoke-test first, then the K8s
-> rollout — follow
-> **[connecting-to-the-new-registry.md](connecting-to-the-new-registry.md)**.
-> It covers the env-var switchover, the one-time `insight` schema
-> bootstrap (a current rough edge the onboarding tool doesn't handle
-> yet), and the Helm-chart gap around `registryDB*` not being wired.
+> registry. The short version:
+>
+> - **Local-dev** — put the DB host + `insight_ai` credentials +
+>   `INSIGHT_CATALOG_PATH` into `backend/.env`, copy the onboarding-
+>   emitted `catalog.yaml` to `<INSIGHT_CATALOG_PATH>/schema.yaml`, run
+>   `./scripts/dev_run.sh`. `cd frontend && npm run dev` for the UI.
+> - **K8s** — apply the `values-insight.yaml` overlay (with the
+>   chart-gap workaround that re-points `insightDB*` at your registry)
+>   and `helm upgrade`.
+>
+> Both paths plus a one-time `insight` schema bootstrap (a current
+> rough edge — `insight_ai` lacks CREATE-SCHEMA privilege so Alembic
+> needs to run as the admin once) are spelled out in
+> **[connecting-to-the-new-registry.md](connecting-to-the-new-registry.md)** — see its **TL;DR — three terminals** block at the top.
 > Steps 6 and 7 below assume the backend is now actually running
 > against your registry.
 
