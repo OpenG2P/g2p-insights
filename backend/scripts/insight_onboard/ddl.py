@@ -130,12 +130,21 @@ def operational_catalog(p: Proposal) -> str:
         for c in t.columns:
             if not c.keep:
                 continue
-            cols_out.append({
+            entry = {
                 "name": c.name,
                 "type": c.pg_type,
                 "pii": c.pii,
                 "description": c.reason or None,
-            })
+            }
+            if c.enum_values:
+                # Authoritative enum values from the registry extension.
+                # The runtime LLM prompt renders these inline so the model
+                # filters with exact declared values (`gender = 'F'`, not
+                # `'FEMALE'`).
+                entry["enum"] = c.enum_values
+            if c.mixin:
+                entry["mixin"] = c.mixin
+            cols_out.append(entry)
         tables_out.append({
             "name": t.safe_view_name,
             "schema": p.target_schema,

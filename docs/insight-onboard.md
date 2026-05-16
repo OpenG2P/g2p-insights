@@ -2,11 +2,10 @@
 
 Automates the steps in the [onboarding runbook](onboarding-new-registry.md):
 inspects a registry's schema, classifies columns by PII risk, proposes safe
-views + materialised views, and applies the result (creates the views, the
-`insight_ai` role with grants, the operational catalog YAML, and a Helm
-values overlay).
+views in a dedicated `insight_safe` schema, applies them with a
+least-privilege role, and writes the operational catalog + Helm overlay.
 
-Three commands: `scan`, `apply`, `audit`. The `scan` and `audit` steps are
+Three subcommands: `scan`, `apply`, `audit`. `scan` and `audit` are
 read-only; `apply` defaults to interactive confirmation and supports
 `--dry-run` so you always see the SQL before anything runs.
 
@@ -14,37 +13,39 @@ read-only; `apply` defaults to interactive confirmation and supports
 
 ## Why this exists
 
-Onboarding a new registry by hand involves: classifying every column, writing
-view DDL, creating roles and grants, drafting a catalog YAML, and verifying
-no PII leaked through. With 20+ tables × 30+ columns each it's mechanical
-work where mistakes leak data. The CLI turns it into:
+Onboarding by hand: classify every column, write view DDL, create roles +
+grants, draft a catalog YAML, verify no PII leaks. With 20+ tables × 30+
+columns each it's mechanical work where mistakes leak data. The CLI turns
+it into:
 
-1. `scan` — produces a reviewable **proposal.yaml**
+1. **`scan`** — produces a reviewable `proposal.yaml`
 2. *human reviews the YAML in their editor*
-3. `apply proposal.yaml` — generates and runs the DDL, writes the catalog
-   and Helm overlay
-4. `audit` — confirms no PII is visible to the new role
+3. **`apply proposal.yaml`** — emits and runs DDL, writes catalog + Helm
+   overlay, runs the leak audit at the end
+4. **`audit`** — re-runs the leak check standalone (for CI, or after a
+   registry schema change)
 
-About 30 min of human time, vs half a day per registry by hand.
+About 30 minutes of human time per registry, vs. half a day by hand.
 
 ---
 
 ## Install
 
-The tool ships as a Python package in `backend/scripts/insight_onboard`. It
-runs in the same venv as the backend:
+The tool ships in `backend/scripts/insight_onboard`. Runs in the same venv
+as the backend:
 
 ```bash
-cd /Users/puneet/Documents/OpenG2P/repos/g2p-insight/backend
-source .venv/bin/activate            # the venv from dev_run.sh setup
-pip install -e .                     # gives us psycopg, pyyaml, anthropic, openai
+cd backend
+source .venv/bin/activate
+pip install -e .                       # brings in psycopg, pyyaml, sqlglot
+python -m insight_onboard --help       # PYTHONPATH=scripts adds the package
 ```
 
-Now you can run:
-
-```bash
-python -m scripts.insight_onboard --help
-```
+If you want to use registry-extension introspection (recommended for OpenG2P
+registries — see below), the only thing you need is **read access to the
+extension's source tree**. No need to install the extension or its
+dependencies — the tool parses the Python files via AST without executing
+them.
 
 ---
 
@@ -54,99 +55,168 @@ python -m scripts.insight_onboard --help
 
 Connect as a DBA who can read every table. The tool only does `SELECT`.
 
+Minimal invocation — heuristic-only:
+
 ```bash
-python -m scripts.insight_onboard scan \
-    --registry-db postgresql://dba:***@registry-host:5432/farmer_registry \
+python -m insight_onboard scan \
+    --registry-db postgresql://dba:***@registry-host:5432/registry \
+    --out /tmp/proposal.yaml
+```
+
+**Recommended for OpenG2P registries** — point at the extension models:
+
+```bash
+python -m insight_onboard scan \
+    --registry-db postgresql://dba:***@registry-host:5432/registry \
+    --registry-extension /path/to/nsr-extension/src/openg2p_registry_nsr_extension/register_domain/models \
+    --registry-core      /path/to/openg2p-registry-core/src/openg2p_registry_core/models \
     --out /tmp/proposal.yaml
 ```
 
 Output:
 
 ```
-[scan] connecting to postgresql://dba:***@registry-host:5432/farmer_registry
-[scan] found 23 tables
-[scan]   inspecting g2p_register_individuals
+[scan] connecting to postgresql://dba:***@registry-host:5432/registry
+[scan]   source schema: public
+[scan]   target schema (safe layer): insight_safe
+[scan]   extension paths: ['.../register_domain/models', '.../core/models']
+[scan]   extension: 59 models, 12 analytical entities, 34 enums
+[scan] found 92 tables in public
+[scan]   inspecting g2p_register_household_assets
 [scan]   inspecting g2p_register_households
 [scan]   ...
 [scan] wrote /tmp/proposal.yaml
 [scan] summary:
-         5 analytical tables
-         18 skipped tables
-         17 PII columns identified (will be dropped)
-         0 columns need human review (`pii: '?'`)
-         2 materialized views suggested
+         12 analytical tables
+         80 skipped tables
+         120 PII columns identified (will be dropped)
+         2 columns need human review (`pii: '?'`)
+         0 materialized views suggested
 
 Next: review /tmp/proposal.yaml, then run `insight-onboard apply ...`
 ```
 
-Inspect `/tmp/proposal.yaml` in your editor. Every column has a
-classification (`pii` / `quasi` / `safe`), a confidence (`high` / `medium`
-/ `low`), and a reason. Edit anything that looks wrong.
+Inspect `/tmp/proposal.yaml` in your editor. Every kept column has a
+classification (`pii` / `quasi` / `safe`), a confidence, a reason, and —
+when the extension is loaded — enum values and the mixin that declared
+the column. Edit anything that looks wrong.
 
 #### What the classifier does
 
-Three layers, each only handles what the previous didn't:
+The classifier runs in this order; the first layer that produces a
+high-confidence verdict wins:
 
 | Layer | Method | What it catches |
-|-------|--------|----------------|
-| 1. Token-set matching on column name | `gps_latitude` → tokens `{gps, latitude}` → both PII keywords | Most well-named columns |
-| 2. Sample-value shape inspection | Reads 20 distinct values; phone-shaped → `pii`, low cardinality + text → `safe` enum, free-text → suspect | Generically-named columns |
-| 3. (Optional) LLM-assisted | Sends column metadata + value SHAPES (never raw values) to the configured LLM, gets back a classification + reasoning | The 5-15% the heuristics couldn't classify |
+|-------|--------|-----------------|
+| **0. Type-based exclusion** | Column type is `json`/`jsonb`/`bytea`/`xml` | Opaque blobs that may carry nested PII — auto-`pii` |
+| **0a. Temporal short-circuit** | Column type is `date`/`timestamp`/`time` | Always analytical scalars — prevents date strings from being misread as phone numbers |
+| **1. Token-set matching on column name** | `gps_latitude` → tokens `{gps, latitude}` → both PII keywords | Most well-named columns. Keyword sets live in [`default_pii_rules.yaml`](../backend/scripts/insight_onboard/default_pii_rules.yaml) |
+| **2. Sample-value shape inspection** | Reads up to 20 distinct values; phone-shaped → `pii`, low-cardinality text → `safe` enum, free-text → suspect | Generically-named columns |
+| **3. (Optional) LLM-assisted** | Sends column metadata + value SHAPES (never raw values) to the configured LLM, gets a classification + reasoning | The 5–15% the heuristics couldn't classify |
 
 Layer 3 is opt-in via `--use-llm`:
 
 ```bash
-python -m scripts.insight_onboard scan --use-llm \
+python -m insight_onboard scan --use-llm \
     --registry-db ... --out /tmp/proposal.yaml
 ```
 
-This uses the same `INSIGHT_LLM__*` env vars as the backend, so whatever LLM
-you've configured for production (Claude / OpenRouter Qwen / on-prem vLLM)
-is what classifies. Cost: ~$0.10 per registry, one-time.
+This uses the same `INSIGHT_LLM__*` env vars as the backend, so whatever
+LLM you've configured for production (Claude / OpenRouter Qwen / on-prem
+vLLM) is what classifies. Cost: roughly $0.10 per registry, one-time.
+
+#### What the registry extension adds
+
+When `--registry-extension` is provided, the scanner does three extra
+things — all AST-based, no runtime imports needed:
+
+1. **Authoritative analytical-table set.** Only tables whose model class
+   transitively inherits `G2PRegister` count as analytical entities.
+   This catches the case where a table *looks* analytical by name (e.g.
+   `g2p_register_verifications`) but is actually workflow/audit, and
+   correctly excludes change-request tables, queues, ingestion pipelines,
+   theme/config tables, etc.
+
+2. **Enum values from `Mapped[…Enum]` annotations.** Many columns are
+   declared `Mapped[GenderEnum]` in Python but stored as plain `String`
+   in Postgres. The DB has no way to tell you the valid values. The
+   extension's enum classes are pure-Python; the scanner pulls
+   `{member.value, ...}` out and writes them into the catalog so the
+   runtime LLM prompt can render `gender: enum={M, F, O}` and the model
+   filters on the exact declared values.
+
+3. **Mixin attribution.** For every kept column the catalog records which
+   mixin declared it (`G2PRegister` / `G2PPerson` / `G2PGeo` / domain
+   mixin). Useful for downstream tooling and for spotting unexpected
+   columns sneaking into the safe layer.
+
+**Caveat:** because the entity rule is strict ("inherits G2PRegister"),
+tables like `g2p_register_scores` get classified as workflow and excluded
+by default. If you want PMT scores as a queryable entity, manually move
+the table from `skipped:` to `analytical_tables:` in the proposal YAML
+before `apply` — that's an explicit operator decision.
 
 ### 2. Review the proposal
 
-The YAML has every table and column with a proposed classification and the
-reason. Reviewers do three things:
+The YAML has every table and column with the proposed classification and
+the reason. Reviewers do four things:
 
-1. **Override any wrong classification** — set `pii:` to the correct value
-   and `keep:` to `true`/`false`.
+1. **Override any wrong classification** — set `pii:` and `keep:` to the
+   intended values.
 2. **Resolve any `pii: '?'` entries** — these are columns the heuristics
-   couldn't classify. Read the `reason`, decide, and replace `?` with a
-   real value.
-3. **Adjust the proposed materialized views** — edit the `join:` clauses,
-   add/remove indexes, change the refresh schedule.
+   couldn't classify (typically empty columns where sample-shape gives no
+   signal). Read the `reason`, decide, replace `?` with a real value.
+   With the extension loaded, ambiguous columns are usually rare (most
+   classifications come from authoritative metadata).
+3. **(Optional) Hand-add materialized views** — auto-generation is
+   deferred; the proposal ends with a commented declarative example of
+   the eventual `{dimensions: […], metrics: […]}` grammar. For now you
+   can hand-write a `materialized_views:` block to get a custom rollup.
+4. **Fill in `deployment.country_code` and `default_currency`** — these
+   are required by `apply`.
 
 You can also adjust:
 
-- `deployment.country_code` and `default_currency` (required)
-- `deployment.k_anonymity` (raise per regulatory requirement)
+- `deployment.k_anonymity` (raise to meet a stricter policy)
+- `source_schema` / `target_schema` (default `public` / `insight_safe`)
 - Move tables from `skipped` to `analytical_tables` if the heuristic was
   too aggressive about excluding them
 
-`apply` will refuse to run until every `?` is resolved and
-`country_code` is set.
+`apply` refuses to run until every `?` is resolved and `country_code` is
+set.
 
 ### 3. Apply — dry-run first
 
 Always do a dry-run first to see the DDL:
 
 ```bash
-python -m scripts.insight_onboard apply \
-    --registry-db postgresql://dba:***@registry-host:5432/farmer_registry \
+python -m insight_onboard apply \
+    --registry-db postgresql://dba:***@registry-host:5432/registry \
     --dry-run \
     --catalog-out /tmp/catalog.yaml \
-    --helm-out /tmp/values-onboard.yaml \
+    --helm-out    /tmp/values-onboard.yaml \
     /tmp/proposal.yaml
 ```
 
 Output: the full SQL that would execute, followed by the generated catalog
 and Helm overlay. **No DB changes.**
 
+The emitted SQL has four sections:
+
+1. `CREATE SCHEMA IF NOT EXISTS "insight_safe"`
+2. `CREATE OR REPLACE VIEW "insight_safe"."v_<table>_safe" AS SELECT … FROM "public"."<table>"` — one per analytical table, with PII columns omitted
+3. *(optional)* `CREATE MATERIALIZED VIEW` — only for MVs you hand-added
+4. Role + grants:
+   - `DROP ROLE IF EXISTS "insight_ai"; CREATE ROLE … LOGIN PASSWORD '…'`
+   - `GRANT CONNECT ON DATABASE … TO "insight_ai"`
+   - `GRANT USAGE ON SCHEMA "insight_safe" TO "insight_ai"` *(NOT on the source schema)*
+   - `GRANT SELECT ON "insight_safe"."<view>" TO "insight_ai"` per view
+   - `ALTER ROLE "insight_ai" SET search_path = "insight_safe"`
+   - Per-role timeouts (statement 30s, lock 5s, idle-tx 60s)
+
 ### 4. Apply — for real
 
-Drop `--dry-run`. The tool will print the SQL again and ask for explicit
-confirmation:
+Drop `--dry-run`. The tool prints the SQL again and asks for confirmation:
 
 ```
 [apply] about to execute the following SQL:
@@ -170,17 +240,18 @@ password, pass `--role-password`.
 
 ### 5. Audit — verify no PII leaked
 
-The audit is a separate command in case you ever want to re-run it later
-(e.g., after a DDL change to the registry):
+The audit is a separate command so you can re-run it later (e.g., after a
+DDL change to the registry, or as part of CI):
 
 ```bash
-python -m scripts.insight_onboard audit \
-    --registry-db postgresql://dba:***@registry-host:5432/farmer_registry \
+python -m insight_onboard audit \
+    --registry-db postgresql://dba:***@registry-host:5432/registry \
     --proposal /tmp/proposal.yaml
 ```
 
-It connects, `SET ROLE insight_ai`, lists every column visible, and diffs
-against the proposal's `pii_columns_in_source`. Output:
+It `SET ROLE insight_ai`, lists every column visible across both the
+source and target schemas, and diffs against the proposal's
+`pii_columns_in_source`. Output:
 
 ```
 audit: 0 leaks ✓
@@ -199,97 +270,207 @@ there are leaks. The standalone `audit` command is for re-checks.
 
 ---
 
-## What gets created
+## Reference — all CLI flags
 
-| Artifact | Location | What for |
-|----------|----------|---------|
-| Safe views (`v_*_safe`) | Registry Postgres, `public` schema | One per analytical table; drops PII columns |
-| Materialised views (`mv_*`) | Registry Postgres, `public` schema | Pre-joined / pre-aggregated for fast reads |
-| `insight_ai` Postgres role | Registry Postgres | `SELECT` only on safe views; explicit `REVOKE` on PII tables; statement timeout 30s |
-| `catalog.yaml` | Wherever `--catalog-out` points (default `catalog.yaml`) | Ship this into the K8s pod via Helm (`insightBackend.appCatalog.schemaYaml`) |
-| `values-onboard.yaml` | Wherever `--helm-out` points | Helm values overlay scaffolding — fill in registryDBHost, hostname, etc. |
-| `insight_ai` password (stdout) | Console | Put into a K8s secret yourself; the tool does NOT write it anywhere |
+### `scan`
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--registry-db <DSN>` | required | Postgres connection string for the source registry |
+| `--out <path>` | `proposal.yaml` | Where to write the reviewable proposal |
+| `--source-schema <name>` | `public` | Schema where the registry tables live |
+| `--target-schema <name>` | `insight_safe` | Dedicated schema for the safe layer (created by `apply`) |
+| `--pii-rules <path>` | bundled defaults | YAML overriding the keyword sets / skip patterns (see below) |
+| `--registry-extension <path>` | none | Path to the extension's `register_domain/models/` dir — enables analytical-entity filter + enum extraction |
+| `--registry-core <path>` | none | Path to `openg2p-registry-core/src/openg2p_registry_core/models/` — provides the base mixins (G2PRegister, G2PPerson, G2PGeo) |
+| `--use-llm` | off | Consult the configured LLM for columns the heuristics flagged unclear |
+
+### `apply`
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `<proposal>` | required | Path to the reviewed proposal YAML |
+| `--registry-db <DSN>` | required | Postgres connection string (admin role for DDL) |
+| `--dry-run` | off | Print SQL but don't execute |
+| `--role <name>` | `insight_ai` | Role to create / overwrite |
+| `--role-password <pw>` | random 32 chars | Skip auto-generation |
+| `--catalog-out <path>` | `catalog.yaml` | Where to write the operational catalog |
+| `--helm-out <path>` | `values-onboard.yaml` | Where to write the Helm values overlay scaffold |
+
+### `audit`
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--registry-db <DSN>` | required | Postgres connection string |
+| `--proposal <path>` | required | Reviewed proposal — provides the PII source-of-truth list |
+| `--role <name>` | `insight_ai` | Role to test |
 
 ---
 
-## Heuristics — keyword sets
+## Schema layout — what `apply` creates in your DB
 
-The token-based classification in [heuristics.py](../backend/scripts/insight_onboard/heuristics.py)
-covers most OpenG2P registries out of the box. Currently:
+```
+registry (database)
+├── public                              ← source schema (operator's tables, untouched)
+│     g2p_register_individuals
+│     g2p_register_households
+│     ...
+└── insight_safe                        ← target schema (created by apply)
+      v_g2p_register_individuals_safe   ← view: only safe columns
+      v_g2p_register_households_safe
+      ...
+```
 
-- **PII keywords**: name, fullname, surname, phone, mobile, email, address,
-  street, gps, lat/lng, latitude/longitude, fayda, aadhaar, ssn, passport,
-  dob, birthdate, iban, mpesa, rid, password, secret
-- **Multi-token PII**: date+birth, national+id, functional+id, registry+id,
-  contact+person, contact+number, account+number, exact+age, api+key
-- **Quasi-identifier keywords**: age, gender, sex, marital, ethnicity,
-  religion, language, disability, orphanhood, plw, displacement, refugee,
-  idp, kebele, village, occupation, employment
-- **Safe keywords**: region, zone, woreda, district, pmt, income,
-  livelihood, livestock, headship, status, score, created/updated/registered
-- **Multi-token safe**: age+bracket, age+group, pmt+score, monthly+income,
-  household+size, headship+type
+The `insight_ai` role:
+- has `USAGE` on `insight_safe` only — **not** on `public`
+- has `SELECT` on each `v_*_safe` view
+- has `search_path = "insight_safe"`, so unqualified LLM-emitted SQL
+  resolves to the safe layer transparently
+- no `INSERT`/`UPDATE`/`DELETE`/`DDL` anywhere
 
-To extend per-country (e.g., to detect a country-specific national-ID
-column name), edit `heuristics.py` and add to `_PII_KEYWORDS` or
-`_PII_MULTI_TOKEN`. A future enhancement: load these from
-`backend/catalog/pii_recognizers.yaml` so they're per-deployment.
+This is defence-in-depth: even if a prompt-injection slipped past the
+SQL validator in the backend, the Postgres role itself can't see PII
+columns or write anything.
 
 ---
 
-## Tables auto-skipped
+## Heuristics — extending per deployment
 
-The scanner skips tables that match these patterns (because they're
-operational / metadata, not analytical):
+The keyword sets, multi-token patterns, and skip-table regexes live in
+[`default_pii_rules.yaml`](../backend/scripts/insight_onboard/default_pii_rules.yaml).
+Pass `--pii-rules my-rules.yaml` to override per deployment. Sections you
+omit from the override fall back to the bundled defaults — you only have
+to write the parts you want to change.
 
-| Pattern | Reason |
-|---------|--------|
-| `^g2p_intake_form_` | Raw intake submissions, pre-validation |
-| `^dedup(_|lication_)` | Deduplication tracking, operational |
-| `_queue$` | Background-job queue |
-| `^g2p_attributes?$` / `^g2p_attribute_values$` | Schema metadata |
+Sections in the rules file:
+
+- **`pii_keywords`** — single-token column-name matches (e.g. `phone`,
+  `email`, `foundational`, `latitude`)
+- **`pii_multi_token`** — combinations like `(date, birth)` → DOB,
+  `(plus, code)` → Google Plus Code (location)
+- **`quasi_keywords`** — single-token re-identifier matches (`gender`,
+  `disability`, `displacement`, `kebele`)
+- **`safe_keywords`** — single-token analytical matches (`region`,
+  `pmt`, `income`, `livelihood`)
+- **`safe_multi_token`** — combinations like `(age, bracket)` →
+  generalised age, checked *before* `pii` so they win over single-token
+  matches
+- **`skip_table_patterns`** — case-insensitive regex matches against the
+  table name. Anything matching is removed from the analytical set
+  upfront, before column inspection
+
+Adding a country-specific national-ID column: append the column-name
+token to `pii_keywords` in your override file. No code change.
+
+---
+
+## Tables auto-skipped (out of the box)
+
+The bundled rules skip these patterns:
+
+| Pattern | Why |
+|---------|-----|
+| `^g2p_intake_form_` | Raw intake submissions — pre-validation, not analytical |
+| `^g2p_register_history_` and `_history$` | History mirror of base table |
+| `^g2p_register_change_request` | Change-request workflow |
+| `^dedup_` / `^deduplication_` | Deduplication tracking |
+| `(?:_|^)queue$` | Background-job queue |
+| `_log$` / `_logs$` / `_audit$` | Audit/log tables |
+| `^g2p_attributes?$` / `^g2p_attribute_values$` | Attribute schema metadata |
 | `^g2p_input_mechanisms?$` | Input-channel registry |
 | `^g2p_intake_form_definitions$` | Form-definition metadata |
+| `^g2p_register_(definitions|schemas|sections|ui_)` | Register schema / UI metadata |
+| `^g2p_register_section_` | Section metadata (UI-driven, not data) |
+| `^g2p_register_score_definitions$` | Score-formula definitions, not score values |
 | `^data_models?$` | Schema definitions |
+| `^g2p_registry_` | Registry configuration (language, theme, import, VC) |
+| `^g2p_registrant_` | Registrant authentication metadata |
+| `^incoming_` / `^outgoing_` / `^import_file_` | Ingestion / outbound pipeline staging |
+| `^registry_(languages|themes|theme_values)$` | i18n / theming |
+| `^subscription_` | Subscription/activity metadata |
 | `^alembic_version$` | Migration state |
-| `_history$` | Mirror of base; raises PII surface unnecessarily |
-| `_log$` / `_logs$` / `_audit$` | Audit/log tables |
 
-To force a "skipped" table back in, move it to `analytical_tables` in the
-proposal YAML before `apply`.
+With `--registry-extension`, the skip set is **expanded**: any table the
+extension declares but whose class doesn't inherit `G2PRegister` is also
+skipped (catches `g2p_register_verifications`, etc.).
+
+To force a "skipped" table back in, move it to `analytical_tables` in
+the proposal YAML before `apply`.
+
+---
+
+## Column-classification gotchas worth knowing
+
+These behaviours are deliberate but easy to be surprised by:
+
+1. **Empty columns → `unclear` (operator must review).** If a column has
+   no rows there's nothing to learn from sample shapes. We default to
+   `pii: '?'` so the operator must explicitly decide rather than silently
+   marking it safe. Annoying on fresh deployments where every table is
+   empty; safe-by-default.
+
+2. **JSON / JSONB / bytea / xml → auto-`pii`.** Opaque blobs can contain
+   anything including nested PII. They can't be projected into a flat
+   safe view without an explicit `jsonb_path` extraction, which is a
+   manual step. Default behaviour: drop.
+
+3. **Date / timestamp columns → safe** (unless the name carries a PII
+   signal like `birth_date`). The sample-shape phone-number regex
+   collides with `YYYY-MM-DD` strings, so we short-circuit on type before
+   running the shape check.
+
+4. **Sample-based classification is bounded.** We sample at most 20
+   distinct values per column. Rare PII patterns in tail data may not
+   show up. The token-name match catches most of this; the
+   `--registry-extension` and `--use-llm` paths catch more still.
 
 ---
 
 ## What this tool deliberately does NOT do
 
-- **Modify your raw registry tables** — never. It only `CREATE`s views and
-  the `insight_ai` role.
-- **Decide policy** — k-anonymity threshold, regulatory classifications
+- **Modify your raw registry tables.** It only `CREATE`s a new schema,
+  views in it, and the `insight_ai` role. Source-schema objects are
+  read-only to the tool.
+- **Decide policy.** k-anonymity threshold, regulatory classifications
   (`pii` vs `quasi` for borderline columns) are operator decisions.
-- **Store the role password** — printed once to stdout; you put it in your
-  K8s secret. We don't want it persisted anywhere by the tool.
-- **Configure the LLM provider** — uses your existing `INSIGHT_LLM__*` env
-  vars; if you haven't set them and pass `--use-llm`, classification falls
-  back to "unclear" for ambiguous cases.
-- **Deploy Helm** — the tool writes a Helm overlay file; the human runs
+  The tool's job is to expose every classification for review, not to
+  make policy.
+- **Store the role password.** Printed once to stdout — you put it in
+  your K8s secret. Nothing on disk.
+- **Configure the LLM provider.** Uses your existing `INSIGHT_LLM__*`
+  env vars; if you haven't set them and pass `--use-llm`, classification
+  falls back to "unclear" for ambiguous cases.
+- **Deploy Helm.** The tool writes a Helm overlay file; the human runs
   `helm upgrade` with it.
+- **Auto-generate materialized views.** Auto-suggestion was removed — it
+  was registry-specific and brittle. The proposal YAML ends with a
+  commented declarative example showing the eventual
+  `{dimensions:[…], metrics:[…]}` grammar. For now, hand-add MVs to the
+  proposal as needed.
 
 ---
 
-## Limitations / future work
+## Limitations / roadmap
 
 | Limitation | Workaround | Roadmap |
 |------------|-----------|---------|
-| Doesn't sample VALUES across multiple rows for the LLM (only shape summaries) | Set `pii` manually in proposal | Optional — would require more careful PII filtering of sampled values before sending to LLM |
-| FK-based MV suggestion is simple (just individuals × households) | Edit `materialized_views:` in the proposal | Could be smarter — detect richer join patterns |
-| No undo for `apply` | Manually `DROP VIEW`/`DROP ROLE`; or run `apply` again with a different proposal | Could add an `unapply` command from a recorded `applied.yaml` |
-| Heuristic keyword set isn't per-country | Edit `heuristics.py` | Load keyword sets from `pii_recognizers.yaml` so they're per-deployment |
-| Audit only covers PII listed in proposal | Run `audit` periodically as part of CI | Add CI workflow that runs audit after every deploy |
+| Aggregate MV codegen still TODO | Hand-write `materialized_views:` block in proposal | Declarative grammar — already documented in the proposal YAML comment block |
+| Refresh scheduling is a free-text string (`refresh:`) — no pg_cron wiring | Set up your own cron / pg_cron | Optional pg_cron integration when present |
+| Distinct-counting is slow on un-analyzed tables (`COUNT(DISTINCT col)` per column) | Run `ANALYZE` on the registry first; or skip stats with a future `--no-sample` flag | Defer distinct-count until *after* the name classifier decides |
+| `--registry-extension` is path-based, not module-name based | Just point at the source tree | Could add module-name resolution via `importlib.util.find_spec` |
+| No `unapply` command | Manually `DROP SCHEMA insight_safe CASCADE; DROP ROLE insight_ai;` or re-run `apply` with a new proposal | Record an `applied.yaml` so an inverse exists |
+| Audit only covers PII listed in the proposal | Re-run `audit` after registry schema changes; wire into CI | Generate an audit GitHub Action |
 
 ---
 
 ## See also
 
-- [onboarding-new-registry.md](onboarding-new-registry.md) — the hand-execution runbook this tool automates
-- [README §5 — Schema catalog](../README.md#5-schema-catalog--generation-and-structure) — format of the catalog YAML the tool writes
-- [README §8 — PII protection](../README.md#8-pii-protection) — the layered model the tool enforces
+- [onboarding-new-registry.md](onboarding-new-registry.md) — the
+  hand-execution runbook this tool automates
+- [catalog-format.md](catalog-format.md) — format of the operational
+  catalog YAML the tool writes
+- [pii-strategy.md](pii-strategy.md) — the layered model the tool enforces
+- [`default_pii_rules.yaml`](../backend/scripts/insight_onboard/default_pii_rules.yaml)
+  — the bundled keyword sets and skip patterns
+- [`extension_introspect.py`](../backend/scripts/insight_onboard/extension_introspect.py)
+  — the AST walker that pulls metadata from OpenG2P extension packages

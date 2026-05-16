@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional  # noqa: F401  (Optional used in dataclass annotation)
 
 import yaml
 
@@ -15,10 +15,21 @@ class ProposalColumn:
     pg_type: str
     pii: str                 # pii | quasi | safe | "?"
     keep: Any                # True | False | "?"
-    confidence: str          # heuristic_name | sample | llm | review
+    confidence: str          # heuristic_name | sample | llm | review | extension
     reason: str = ""
     distinct_count: int = 0
     null_rate: float = 0.0
+    # Filled in from the registry extension (`--registry-extension`) when
+    # the column's `Mapped[…Enum]` annotation resolves to a known enum.
+    # The runtime LLM prompt uses these as the authoritative allowed-value
+    # set for enum-typed filter columns — far better than guessing from
+    # sampled data.
+    enum_values: Optional[List[str]] = None
+    # Which extension mixin/class declared this column (e.g. "G2PPerson",
+    # "G2PGeo", "G2PIndividual"). Useful for downstream tooling and as
+    # context in the catalog, even though we don't currently drive PII
+    # decisions off it (column-level heuristics are more reliable).
+    mixin: Optional[str] = None
 
 
 @dataclass

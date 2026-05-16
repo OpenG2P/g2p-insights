@@ -18,7 +18,8 @@ import asyncio
 import datetime as dt
 import logging
 import sys
-from typing import List
+from pathlib import Path
+from typing import List, Optional
 from urllib.parse import urlparse
 
 import psycopg
@@ -32,6 +33,7 @@ from .ddl import (
     generate_password,
     operational_catalog,
 )
+from .extension_introspect import ExtMetadata, load_extension_metadata
 from .heuristics import (
     Classification,
     ColumnStats,
@@ -67,6 +69,26 @@ async def cmd_scan(args: argparse.Namespace) -> int:
     rules = load_rules(getattr(args, "pii_rules", None))
     if getattr(args, "pii_rules", None):
         print(f"[scan]   PII rules: {args.pii_rules}")
+
+    # Optional: load registry-extension metadata. This narrows the
+    # analytical-table set to entities the extension's models actually
+    # declare, and pulls enum values from `Mapped[…Enum]` annotations so
+    # the catalog tells the LLM the valid values for each enum column.
+    ext_md: Optional[ExtMetadata] = None
+    ext_paths: List[Path] = []
+    if getattr(args, "registry_extension", None):
+        ext_paths.append(Path(args.registry_extension))
+    if getattr(args, "registry_core", None):
+        ext_paths.append(Path(args.registry_core))
+    if ext_paths:
+        print(f"[scan]   extension paths: {[str(p) for p in ext_paths]}")
+        ext_md = load_extension_metadata(ext_paths)
+        print(
+            f"[scan]   extension: {len(ext_md.models)} models, "
+            f"{len(ext_md.analytical_entity_tables)} analytical entities, "
+            f"{len(ext_md.enum_catalog)} enums"
+        )
+
     with psycopg.connect(args.registry_db) as conn:
         tables = list_tables(conn, schema=args.source_schema)
         print(f"[scan] found {len(tables)} tables in {args.source_schema}")
@@ -80,6 +102,27 @@ async def cmd_scan(args: argparse.Namespace) -> int:
             if reason:
                 skipped.append({"name": t, "reason": reason})
                 continue
+
+            # Extension-driven skip: when an extension is loaded, ANY
+            # table modelled by a class that isn't a `G2PRegister`-extending
+            # entity is treated as workflow/operational and skipped — even
+            # if heuristics would otherwise have kept it. This is what
+            # catches `g2p_register_verifications`, `g2p_register_scores`
+            # (score events, not entities), the change-request family,
+            # queues, etc.
+            if ext_md is not None:
+                model = ext_md.model_for_table(t)
+                if model is not None and not model.is_analytical_entity:
+                    skipped.append({
+                        "name": t,
+                        "reason": (
+                            f"extension declares {model.class_name} but it does "
+                            f"not extend G2PRegister — workflow/operational, "
+                            f"not an analytical entity"
+                        ),
+                    })
+                    continue
+
             print(f"[scan]   inspecting {t}")
             cols = list_columns(conn, t, schema=args.source_schema)
             prop_cols = []
@@ -105,6 +148,16 @@ async def cmd_scan(args: argparse.Namespace) -> int:
                 else:
                     keep = True
 
+                enum_values = None
+                mixin = None
+                if ext_md is not None:
+                    ext_model = ext_md.model_for_table(t)
+                    if ext_model is not None:
+                        ext_col = ext_model.columns.get(c["name"])
+                        if ext_col is not None:
+                            enum_values = ext_col.enum_values
+                            mixin = ext_col.declaring_class
+
                 prop_cols.append(ProposalColumn(
                     name=c["name"],
                     pg_type=c["pg_type"],
@@ -114,6 +167,8 @@ async def cmd_scan(args: argparse.Namespace) -> int:
                     reason=reason_str,
                     distinct_count=stats.distinct_count,
                     null_rate=round(stats.null_rate, 4),
+                    enum_values=enum_values,
+                    mixin=mixin,
                 ))
 
             analytical.append(ProposalTable(
@@ -353,6 +408,17 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--pii-rules", default=None,
                     help="Path to a YAML file overriding the default PII/quasi/safe keyword rules. "
                          "Sections omitted from the override fall back to the bundled defaults.")
+    sc.add_argument("--registry-extension", default=None,
+                    help="Path to the registry extension's `register_domain/models/` directory "
+                         "(e.g. .../nsr-extension/src/openg2p_registry_nsr_extension/register_domain/models). "
+                         "When provided, only tables modelled by classes that inherit `G2PRegister` are "
+                         "treated as analytical entities, and enum values are extracted from Mapped[...Enum] "
+                         "annotations and written into the catalog.")
+    sc.add_argument("--registry-core", default=None,
+                    help="Optional path to the registry-core `models/` directory "
+                         "(e.g. .../openg2p-registry-core/src/openg2p_registry_core/models). "
+                         "Provides the base mixins (G2PRegister, G2PPerson, G2PGeo) and their enums "
+                         "for full column-to-mixin attribution.")
 
     ap = sub.add_parser("apply", help="Apply a reviewed proposal: create views, role, grants, catalog, Helm overlay.")
     ap.add_argument("proposal", help="Path to the reviewed proposal YAML.")

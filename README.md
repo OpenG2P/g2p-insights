@@ -284,14 +284,24 @@ g2p-insight/
 
 ## 5. Schema catalog — generation and structure
 
-> **Onboarding a new registry?**
-> - **Automated** — use the `insight-onboard` CLI:
+> **Onboarding a new registry? Two paths, same result:**
+> - **Automated (default)** — `insight-onboard` CLI:
 >   [docs/insight-onboard.md](docs/insight-onboard.md). Three commands
 >   (`scan` / `apply` / `audit`) take a fresh registry DB to a deployed
->   catalog in ~30 minutes. The human reviews a single proposal YAML.
-> - **Manual** — the DBA runbook:
+>   catalog in ~30 minutes. The human reviews a single proposal YAML
+>   before any DDL runs. For OpenG2P registries, pointing the CLI at the
+>   extension's SQLAlchemy models (`--registry-extension`) adds
+>   authoritative analytical-entity detection and enum-value extraction.
+> - **Manual** — DBA runbook:
 >   [docs/onboarding-new-registry.md](docs/onboarding-new-registry.md) —
->   7 steps with copy-pasteable SQL/YAML.
+>   7 steps with copy-pasteable SQL/YAML. Use this when the CLI doesn't
+>   fit (highly non-standard schema, no admin available to install the
+>   tool, or you need line-by-line SQL review for compliance sign-off).
+>   The runbook now shows the CLI shortcut alongside each manual step.
+>
+> Both paths produce the same artifacts: PII-safe views in a dedicated
+> `insight_safe` schema, an `insight_ai` role with SELECT-only grants,
+> the operational catalog YAML, and a Helm values overlay.
 >
 > This section covers the catalog *format*; the runbook is the *recipe*;
 > the CLI is the *automation* over the recipe.
