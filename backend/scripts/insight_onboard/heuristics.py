@@ -216,6 +216,43 @@ def is_temporal_type(pg_type: str) -> bool:
     return any(pg_type.lower().startswith(p) for p in _TEMPORAL_TYPE_PREFIXES)
 
 
+# -----------------------------------------------------------------------------
+# Mixin-based priors (extension-led mode)
+# -----------------------------------------------------------------------------
+# When an OpenG2P registry-core mixin declares a column, we know quite a bit
+# about its character even before looking at the column name:
+#   * G2PPerson holds direct identity fields (first_name, foundational_id,
+#     phone_numbers, emails, birth_date, …) — lean PII.
+#   * G2PGeo holds geographic identifiers (lat/lng, plus_code, postal_code,
+#     address lines, …) — lean PII/quasi.
+#   * G2PRegister holds workflow + audit columns (created_by, last_approved_at,
+#     record_status, …) plus a few register-level personal identifiers
+#     (record_name, *_record_id, search_text, record_image_storage_id) —
+#     mostly safe with name-driven exceptions.
+#
+# These are PRIORS, not overrides: a high-confidence name signal still wins
+# (e.g. `registration_date` declared in G2PPerson is still safe via the
+# temporal-type rule). Mixin priors only fire when name+type didn't decide.
+_MIXIN_PRIORS = {
+    "G2PPerson":   ("pii",   "extension prior: column declared in G2PPerson mixin (direct identity)"),
+    "G2PGeo":     ("quasi", "extension prior: column declared in G2PGeo mixin (geographic — re-id risk)"),
+    "G2PRegister": ("safe",  "extension prior: column declared in G2PRegister mixin (audit/workflow metadata)"),
+}
+
+
+def classify_by_mixin(mixin: Optional[str]) -> Optional[Tuple[Classification, Confidence, str]]:
+    """Return a medium-confidence prior based on which extension mixin
+    declared the column. Returns None for unknown/domain mixins — those
+    fall through to the standard heuristic stack."""
+    if not mixin:
+        return None
+    prior = _MIXIN_PRIORS.get(mixin)
+    if prior is None:
+        return None
+    cls, reason = prior
+    return cls, "medium", reason
+
+
 def classify_by_sample(stats: ColumnStats) -> Tuple[Classification, Confidence, str]:
     """Use distinct count / null rate / value shapes to classify columns whose
     name didn't tell us anything."""

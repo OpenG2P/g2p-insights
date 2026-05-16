@@ -101,20 +101,44 @@ classification (`pii` / `quasi` / `safe`), a confidence, a reason, and —
 when the extension is loaded — enum values and the mixin that declared
 the column. Edit anything that looks wrong.
 
+#### Two scan modes
+
+The scan operates in one of two modes, picked by whether `--registry-extension`
+was passed:
+
+| Mode | When | What it iterates | Typical scan time | Ambiguity |
+|------|------|------------------|-------------------|-----------|
+| **Extension-led** (recommended for OpenG2P) | `--registry-extension` provided | Only the entity tables declared by the extension (e.g. 12 on NSR) | Seconds | Near zero |
+| **Heuristic-led** (fallback for any Postgres) | No extension flag | Every DB table, minus name-pattern skips | Minutes (1–5 min per ~100 tables) | Several per scan |
+
+In **extension-led mode**, the script asks the extension "what tables matter?"
+and **never even calls `list_columns` on DB tables that aren't declared
+analytical entities**. The 80 operational/workflow/queue tables in a real
+NSR registry get skipped without a single column query. This is the main
+source of the speedup — heuristic-led mode pays per-column `COUNT(DISTINCT)`
+on every column of every non-skip-patterned table; extension-led mode pays
+that cost only when no other classifier decided.
+
 #### What the classifier does
 
-The classifier runs in this order; the first layer that produces a
-high-confidence verdict wins:
+The per-column classifier runs in this order; the first layer that produces a
+high-confidence verdict wins, and the slow sample step at the end only runs
+if nothing earlier decided:
 
-| Layer | Method | What it catches |
-|-------|--------|-----------------|
-| **0. Type-based exclusion** | Column type is `json`/`jsonb`/`bytea`/`xml` | Opaque blobs that may carry nested PII — auto-`pii` |
-| **0a. Temporal short-circuit** | Column type is `date`/`timestamp`/`time` | Always analytical scalars — prevents date strings from being misread as phone numbers |
-| **1. Token-set matching on column name** | `gps_latitude` → tokens `{gps, latitude}` → both PII keywords | Most well-named columns. Keyword sets live in [`default_pii_rules.yaml`](../backend/scripts/insight_onboard/default_pii_rules.yaml) |
-| **2. Sample-value shape inspection** | Reads up to 20 distinct values; phone-shaped → `pii`, low-cardinality text → `safe` enum, free-text → suspect | Generically-named columns |
-| **3. (Optional) LLM-assisted** | Sends column metadata + value SHAPES (never raw values) to the configured LLM, gets a classification + reasoning | The 5–15% the heuristics couldn't classify |
+| Layer | Method | What it catches | Costs a DB query? |
+|-------|--------|-----------------|-------------------|
+| **1. Type-based exclusion** | Column type is `json`/`jsonb`/`bytea`/`xml` | Opaque blobs that may carry nested PII — auto-`pii` | No |
+| **2. Token-set matching on column name** | `gps_latitude` → tokens `{gps, latitude}` → both PII keywords. Keyword sets live in [`default_pii_rules.yaml`](../backend/scripts/insight_onboard/default_pii_rules.yaml). Temporal types (date/timestamp) also short-circuit here as `safe`. | Most well-named columns | No |
+| **3. Extension enum** | `Mapped[GenderEnum]` annotation in the registry extension → safe enum, with values written into the catalog | Categorical analytical fields (gender, marital_status, etc.) | No |
+| **4. Extension mixin prior** | Column declared in `G2PPerson` mixin → `pii` prior; `G2PGeo` → `quasi`; `G2PRegister` → `safe`. Medium-confidence, loses to a high-confidence name signal. | Columns whose name is too generic to decide, like `prefix`/`suffix`/`altitude` | No |
+| **5. Sample-value shape inspection** | `COUNT(DISTINCT col)` + 20 distinct values; phone-shaped → `pii`, low cardinality + text → `safe` enum, free-text → suspect | Generically-named columns that no earlier layer decided | **Yes — slow** |
+| **6. (Optional) LLM-assisted** | Sends column metadata + value SHAPES (never raw values) to the configured LLM | The few residual unclear columns | No (LLM API) |
 
-Layer 3 is opt-in via `--use-llm`:
+Layers 3 and 4 only contribute when the extension is loaded. In
+extension-led mode they usually decide the residual columns the name
+classifier couldn't, so layer 5 (the slow one) almost never fires.
+
+Layer 6 is opt-in via `--use-llm`:
 
 ```bash
 python -m insight_onboard scan --use-llm \
@@ -127,34 +151,54 @@ vLLM) is what classifies. Cost: roughly $0.10 per registry, one-time.
 
 #### What the registry extension adds
 
-When `--registry-extension` is provided, the scanner does three extra
+When `--registry-extension` is provided, the scanner does four extra
 things — all AST-based, no runtime imports needed:
 
-1. **Authoritative analytical-table set.** Only tables whose model class
-   transitively inherits `G2PRegister` count as analytical entities.
-   This catches the case where a table *looks* analytical by name (e.g.
-   `g2p_register_verifications`) but is actually workflow/audit, and
-   correctly excludes change-request tables, queues, ingestion pipelines,
-   theme/config tables, etc.
+1. **Authoritative analytical-table set, drives the outer loop.** Only
+   tables whose model class transitively inherits `G2PRegister` count as
+   analytical entities. The scan iterates THIS set, not the DB's table
+   list. Tables in the DB but not in the extension's entity list are
+   skipped immediately — no `list_columns`, no sampling. This catches
+   `g2p_register_verifications` (looks analytical by name, but its model
+   doesn't extend `G2PRegister` — workflow/audit), change-request tables,
+   queues, ingestion pipelines, theme/config tables, etc.
 
 2. **Enum values from `Mapped[…Enum]` annotations.** Many columns are
    declared `Mapped[GenderEnum]` in Python but stored as plain `String`
    in Postgres. The DB has no way to tell you the valid values. The
    extension's enum classes are pure-Python; the scanner pulls
-   `{member.value, ...}` out and writes them into the catalog so the
+   `{member.value, …}` out and writes them into the catalog so the
    runtime LLM prompt can render `gender: enum={M, F, O}` and the model
    filters on the exact declared values.
 
-3. **Mixin attribution.** For every kept column the catalog records which
-   mixin declared it (`G2PRegister` / `G2PPerson` / `G2PGeo` / domain
-   mixin). Useful for downstream tooling and for spotting unexpected
-   columns sneaking into the safe layer.
+3. **Mixin attribution + PII priors.** For every kept column the catalog
+   records which mixin declared it (`G2PRegister` / `G2PPerson` / `G2PGeo`
+   / domain mixin). The mixin also drives a medium-confidence PII prior
+   for residual columns the name classifier couldn't decide: `G2PPerson`
+   → `pii`, `G2PGeo` → `quasi`, `G2PRegister` → `safe`. A high-confidence
+   name signal (`registration_date` in G2PPerson → still `safe` via the
+   temporal-type rule) always wins.
 
-**Caveat:** because the entity rule is strict ("inherits G2PRegister"),
-tables like `g2p_register_scores` get classified as workflow and excluded
-by default. If you want PMT scores as a queryable entity, manually move
-the table from `skipped:` to `analytical_tables:` in the proposal YAML
-before `apply` — that's an explicit operator decision.
+4. **Sanity check for schema drift.** Entity tables declared by the
+   extension but missing from the DB show up in `skipped:` with reason
+   "declared by extension but absent in DB — migrations behind?". Useful
+   diagnostic — typically means the deployment is on an older migration.
+
+**Caveats worth knowing:**
+
+- **`g2p_register_scores` is excluded by default.** Its model
+  (`G2PRegisterScore`) doesn't transitively inherit `G2PRegister`, so the
+  strict entity rule treats it as non-entity. If you want PMT scores as a
+  queryable table, manually move it from `skipped:` to
+  `analytical_tables:` in the proposal YAML before `apply`.
+- **Schema drift is a hard dependency.** Extension-led mode trusts the
+  extension package as the source of truth. If a deployment ran a
+  migration the extension's models don't know about yet, the new columns
+  are invisible to Insight until the extension package catches up. For
+  pure-OpenG2P deployments this is the right tension; for deployments
+  that hand-customise the schema, run **without** the extension flag
+  (heuristic-led mode) until the customisations land in a packaged
+  extension.
 
 ### 2. Review the proposal
 
@@ -456,7 +500,7 @@ These behaviours are deliberate but easy to be surprised by:
 |------------|-----------|---------|
 | Aggregate MV codegen still TODO | Hand-write `materialized_views:` block in proposal | Declarative grammar — already documented in the proposal YAML comment block |
 | Refresh scheduling is a free-text string (`refresh:`) — no pg_cron wiring | Set up your own cron / pg_cron | Optional pg_cron integration when present |
-| Distinct-counting is slow on un-analyzed tables (`COUNT(DISTINCT col)` per column) | Run `ANALYZE` on the registry first; or skip stats with a future `--no-sample` flag | Defer distinct-count until *after* the name classifier decides |
+| Distinct-counting is slow on un-analyzed tables (`COUNT(DISTINCT col)` per column) | Use `--registry-extension` to skip sampling on classifier-resolvable columns; or run `ANALYZE` on the registry first | Done for extension-led mode — sampling only fires when type+name+extension all return unclear |
 | `--registry-extension` is path-based, not module-name based | Just point at the source tree | Could add module-name resolution via `importlib.util.find_spec` |
 | No `unapply` command | Manually `DROP SCHEMA insight_safe CASCADE; DROP ROLE insight_ai;` or re-run `apply` with a new proposal | Record an `applied.yaml` so an inverse exists |
 | Audit only covers PII listed in the proposal | Re-run `audit` after registry schema changes; wire into CI | Generate an audit GitHub Action |
