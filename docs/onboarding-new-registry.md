@@ -399,6 +399,20 @@ helm upgrade --install g2p-insight ./helm/g2p-insight \
 
 ---
 
+> **Before steps 6 and 7 — get the backend pointed at the new DB.**
+> Steps 1–5 produced the safe layer, the role, the catalog, and the
+> Helm overlay. They didn't yet make a running backend talk to the new
+> registry. For that — local-dev smoke-test first, then the K8s
+> rollout — follow
+> **[connecting-to-the-new-registry.md](connecting-to-the-new-registry.md)**.
+> It covers the env-var switchover, the one-time `insight` schema
+> bootstrap (a current rough edge the onboarding tool doesn't handle
+> yet), and the Helm-chart gap around `registryDB*` not being wired.
+> Steps 6 and 7 below assume the backend is now actually running
+> against your registry.
+
+---
+
 ## Step 6 — Smoke-test
 
 Once the backend is up, three quick checks (same regardless of path):
@@ -433,6 +447,11 @@ Per OpenG2P standard, capture in your country's operator docs:
 - Path used: CLI or manual (the proposal YAML is your record for the
   CLI path; this runbook + your edited SQL is the record for the manual
   path)
+
+You're done with onboarding. Routine operations
+(deploy updates, re-scan after a registry schema change, periodic audits)
+are covered in [connecting-to-the-new-registry.md](connecting-to-the-new-registry.md)
+and [insight-onboard.md](insight-onboard.md).
 
 ---
 
