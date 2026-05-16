@@ -9,17 +9,31 @@ const { Title, Paragraph, Text } = Typography;
 
 interface Fn { name: string; doc: string }
 
-const ENTITIES = ["mv_individuals_summary", "mv_district_aggregates"];
+interface CatColumn { name: string; type?: string; pii?: string }
+interface CatTable  { name: string; columns?: CatColumn[] }
 
-// Columns the analytics endpoints can safely target. Tied to the test-stack
-// catalog for now — when the platform reads this from the live catalog this
-// list will be sourced from /catalog at runtime.
-const NUMERIC_COLUMNS = ["pmt_score", "monthly_income", "estimated_age", "coping_strategies_index"];
-const CATEGORICAL_COLUMNS = [
+// Sensible fallbacks if /catalog hasn't loaded yet or the deployment hasn't
+// onboarded a registry. These match the test-stack so dev keeps working with
+// no extra config.
+const FALLBACK_ENTITIES = ["mv_individuals_summary", "mv_district_aggregates"];
+const FALLBACK_NUMERIC = ["pmt_score", "monthly_income", "estimated_age", "coping_strategies_index"];
+const FALLBACK_CATEGORICAL = [
   "gender", "region_code", "zone_code", "woreda_code", "age_bracket",
   "primary_livelihood", "employment_status", "disability_status",
   "displacement_status", "pastoralist_classification", "headship_type",
 ];
+
+// Postgres types that the analytics endpoints can compute numeric stats on.
+const NUMERIC_PG_TYPES = new Set([
+  "int", "integer", "bigint", "smallint",
+  "float", "double precision", "real",
+  "numeric", "decimal",
+]);
+// Anything string-ish / enum-shaped — categorical for group-by / crosstab.
+const CATEGORICAL_PG_TYPES = new Set([
+  "string", "text", "varchar", "character varying", "char", "enum",
+  "bool", "boolean",
+]);
 
 interface Prefill {
   function: string;
@@ -30,7 +44,10 @@ interface Prefill {
 export default function ExpertLab() {
   const [fns, setFns] = useState<Fn[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
-  const [entity, setEntity] = useState<string>("mv_individuals_summary");
+  // Catalog-driven entity list. Falls back to test-stack names when /catalog
+  // hasn't loaded yet (initial render) or returned empty.
+  const [catalogTables, setCatalogTables] = useState<CatTable[]>([]);
+  const [entity, setEntity] = useState<string>(FALLBACK_ENTITIES[0]);
 
   // Per-function parameters. We flatten so the form is one set of fields;
   // individual functions consume what they need and ignore the rest.
@@ -50,10 +67,50 @@ export default function ExpertLab() {
     assumptions: string[];
   } | null>(null);
 
-  // Load function catalog.
+  // Load analytics-function catalog.
   useEffect(() => {
     api.get<{ functions: Fn[] }>("/analytics/functions").then((r) => setFns(r.data.functions));
   }, []);
+
+  // Load table+column catalog so the entity / column dropdowns reflect the
+  // actually-onboarded registry instead of the test-stack defaults.
+  useEffect(() => {
+    api.get<{ tables?: CatTable[] }>("/catalog")
+      .then((r) => {
+        const tabs = r.data.tables || [];
+        if (tabs.length === 0) return;
+        setCatalogTables(tabs);
+        // If current `entity` isn't in the new catalog, switch to the first one.
+        if (!tabs.some((t) => t.name === entity)) {
+          setEntity(tabs[0].name);
+        }
+      })
+      .catch((e) => console.warn("Could not load /catalog — using fallback dropdown lists:", e));
+    // intentional: run once at mount; entity changes are user-driven afterwards.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Derived lists for the entity / column dropdowns.
+  const entityNames = useMemo<string[]>(
+    () => (catalogTables.length ? catalogTables.map((t) => t.name) : FALLBACK_ENTITIES),
+    [catalogTables],
+  );
+  const currentTableCols = useMemo<CatColumn[]>(
+    () => catalogTables.find((t) => t.name === entity)?.columns || [],
+    [catalogTables, entity],
+  );
+  const numericColumns = useMemo<string[]>(() => {
+    if (!currentTableCols.length) return FALLBACK_NUMERIC;
+    return currentTableCols
+      .filter((c) => c.pii !== "pii" && c.type && NUMERIC_PG_TYPES.has(c.type.toLowerCase()))
+      .map((c) => c.name);
+  }, [currentTableCols]);
+  const categoricalColumns = useMemo<string[]>(() => {
+    if (!currentTableCols.length) return FALLBACK_CATEGORICAL;
+    return currentTableCols
+      .filter((c) => c.pii !== "pii" && c.type && CATEGORICAL_PG_TYPES.has(c.type.toLowerCase()))
+      .map((c) => c.name);
+  }, [currentTableCols]);
 
   // Read any pre-fill from sessionStorage (set by Ask when redirecting).
   useEffect(() => {
@@ -148,7 +205,7 @@ export default function ExpertLab() {
               value={entity}
               onChange={setEntity}
               style={{ width: 240 }}
-              options={ENTITIES.map((e) => ({ value: e, label: e }))}
+              options={entityNames.map((e) => ({ value: e, label: e }))}
             />
           </Space>
 
@@ -164,7 +221,7 @@ export default function ExpertLab() {
                 value={column}
                 onChange={setColumn}
                 style={{ width: 220 }}
-                options={NUMERIC_COLUMNS.map((c) => ({ value: c, label: c }))}
+                options={numericColumns.map((c) => ({ value: c, label: c }))}
               />
             </Space>
           )}
@@ -176,7 +233,7 @@ export default function ExpertLab() {
                 value={groupBy}
                 onChange={setGroupBy}
                 style={{ width: 220 }}
-                options={CATEGORICAL_COLUMNS.map((c) => ({ value: c, label: c }))}
+                options={categoricalColumns.map((c) => ({ value: c, label: c }))}
               />
             </Space>
           )}
@@ -189,7 +246,7 @@ export default function ExpertLab() {
                 value={columns}
                 onChange={setColumns}
                 style={{ minWidth: 360 }}
-                options={[...NUMERIC_COLUMNS, ...CATEGORICAL_COLUMNS].map((c) => ({ value: c, label: c }))}
+                options={[...numericColumns, ...categoricalColumns].map((c) => ({ value: c, label: c }))}
               />
             </Space>
           )}
@@ -198,10 +255,10 @@ export default function ExpertLab() {
             <Space wrap>
               <Text>Row:</Text>
               <Select value={row} onChange={setRow} style={{ width: 220 }}
-                options={CATEGORICAL_COLUMNS.map((c) => ({ value: c, label: c }))} />
+                options={categoricalColumns.map((c) => ({ value: c, label: c }))} />
               <Text>Column:</Text>
               <Select value={col} onChange={setCol} style={{ width: 220 }}
-                options={CATEGORICAL_COLUMNS.map((c) => ({ value: c, label: c }))} />
+                options={categoricalColumns.map((c) => ({ value: c, label: c }))} />
             </Space>
           )}
 

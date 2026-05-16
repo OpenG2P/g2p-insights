@@ -82,6 +82,12 @@ class ExtModel:
     # entity data; the other `g2p_register_*` tables (change_requests,
     # verifications, queues, etc.) are workflow/audit/operational.
     is_analytical_entity: bool = False
+    # Suggested operator-confirmable role per OpenG2P registry concepts:
+    #   * "register"           — standard entity register (extends G2PRegister)
+    #   * "programme_register" — application register (extends G2PProgramRegister)
+    #   * "table"              — supporting one-to-many child of a register
+    # None when the model isn't an analytical entity at all (skipped).
+    suggested_role: Optional[str] = None
 
     @property
     def is_register(self) -> bool:
@@ -168,7 +174,28 @@ def load_extension_metadata(
             continue   # mixin / abstract base; not a table
         columns = _resolve_columns(rec, class_records, enum_catalog)
         kind = _classify_table_kind(rec, class_records)
-        is_entity = _inherits_class(rec, class_records, target="G2PRegister")
+        # `G2PRegister` is the standard entity base; `G2PProgramRegister`
+        # is the separate base for programme application registers
+        # (managed by PBMS). Either one makes the model an analytical
+        # entity; only the latter is a programme_register.
+        is_standard_register = _inherits_class(rec, class_records, target="G2PRegister")
+        is_programme_register = _inherits_class(rec, class_records, target="G2PProgramRegister")
+        is_entity = is_standard_register or is_programme_register
+
+        suggested_role: Optional[str] = None
+        if is_programme_register:
+            suggested_role = "programme_register"
+        elif is_standard_register:
+            # Name-based discriminator inside the standard-register family:
+            # single segment after `g2p_register_` → main register (one
+            # row per entity); multi-segment → satellite table. Mirrors
+            # the heuristic in heuristics.suggest_table_role, with the
+            # extension serving as the authoritative entity filter.
+            tail = (rec.tablename or "").lower()
+            if tail.startswith("g2p_register_"):
+                tail = tail[len("g2p_register_"):]
+            suggested_role = "register" if "_" not in tail else "table"
+
         metadata.models[rec.tablename] = ExtModel(
             class_name=name,
             tablename=rec.tablename,
@@ -176,6 +203,7 @@ def load_extension_metadata(
             columns=columns,
             kind=kind,
             is_analytical_entity=is_entity,
+            suggested_role=suggested_role,
         )
 
     return metadata

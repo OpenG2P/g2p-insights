@@ -253,6 +253,143 @@ def classify_by_mixin(mixin: Optional[str]) -> Optional[Tuple[Classification, Co
     return cls, "medium", reason
 
 
+# -----------------------------------------------------------------------------
+# Register vs supporting-table classification (OpenG2P convention)
+# -----------------------------------------------------------------------------
+# Across OpenG2P registries, the schema follows a consistent shape:
+#   * a **register** is the main entity table — one row per registered
+#     individual or household. Examples: g2p_register_individuals,
+#     g2p_register_households.
+#   * a **table** is a supporting one-to-many child of a register —
+#     `disabilities` per individual, `assets` per household, etc.
+#     A satellite's name has the form g2p_register_<entity>_<aspect>.
+#
+# These are SUGGESTIONS the operator confirms during proposal review —
+# the heuristic is intentionally simple and may be wrong for non-standard
+# deployments. The operator's role/parent_register edits in the proposal
+# YAML are authoritative.
+_REGISTRY_PREFIX = "g2p_register_"
+
+
+def suggest_table_role(table_name: str) -> str:
+    """Return "register" or "table" based on token count after stripping
+    the `g2p_register_` prefix.
+
+      * `g2p_register_individuals`       → 1 segment  → register
+      * `g2p_register_households`        → 1 segment  → register
+      * `g2p_register_individual_disabilities` → 2+ segments → table
+      * `g2p_register_household_assets`  → 2+ segments → table
+
+    Tables outside the `g2p_register_*` naming convention default to
+    "register" (the operator likely promoted them in the proposal)."""
+    name = table_name.lower()
+    if not name.startswith(_REGISTRY_PREFIX):
+        return "register"
+    tail = name[len(_REGISTRY_PREFIX):]
+    return "register" if "_" not in tail else "table"
+
+
+def suggest_parent_register(
+    table_name: str, register_names: List[str]
+) -> Optional[str]:
+    """For a satellite table, pick the register whose name's tail is the
+    longest prefix of the satellite's tail.
+
+      * satellite `g2p_register_individual_disabilities` tail
+        → "individual_disabilities"
+      * candidates' tails: "individuals" (from g2p_register_individuals),
+        "households" (from g2p_register_households)
+      * "individuals" shares "individual" with the satellite (10 chars);
+        "households" shares "" → individuals wins → parent
+        = g2p_register_individuals.
+
+    Returns None when no register name shares a non-trivial prefix —
+    operator will fill in manually."""
+    if suggest_table_role(table_name) == "register":
+        return None
+    name = table_name.lower()
+    if not name.startswith(_REGISTRY_PREFIX):
+        return None
+    satellite_tail = name[len(_REGISTRY_PREFIX):]
+
+    best_register: Optional[str] = None
+    best_overlap = 0
+    for reg in register_names:
+        reg_l = reg.lower()
+        if not reg_l.startswith(_REGISTRY_PREFIX):
+            continue
+        reg_tail = reg_l[len(_REGISTRY_PREFIX):]
+        # Compare singular vs plural — "individual" prefix of "individuals".
+        # Common prefix length on raw chars.
+        common = 0
+        for a, b in zip(reg_tail, satellite_tail):
+            if a != b:
+                break
+            common += 1
+        # Require at least 4 chars overlap to avoid false matches
+        # (e.g. "h" matching "h*" everywhere). For OpenG2P names the
+        # minimum meaningful entity name is `household` (9) or `individual` (10).
+        if common >= 4 and common > best_overlap:
+            best_overlap = common
+            best_register = reg
+    return best_register
+
+
+def describe_table(
+    table_name: str, role: str, parent_register: Optional[str]
+) -> str:
+    """Default human-readable description by role. Operator overrides in the
+    proposal YAML; this is just the starting point.
+
+    Three roles, per OpenG2P concepts:
+      * `register` — standard entity register (Individual, Household, …).
+        One row per registered entity. Assigns functional IDs.
+      * `programme_register` — application register for a benefit programme,
+        managed by PBMS. One row per application. Assigns functional IDs
+        but has no version history.
+      * `table` — supporting one-to-many child of a register. No functional
+        ID. One row per `<aspect>` record."""
+    name = table_name.lower()
+    tail = name[len(_REGISTRY_PREFIX):] if name.startswith(_REGISTRY_PREFIX) else name
+
+    if role == "register":
+        # Singularise: drop trailing 's'. "individuals" → "individual",
+        # "households" → "household". Good enough for the common case;
+        # operator edits if they want different prose.
+        entity = tail.rstrip("s") if tail.endswith("s") else tail
+        return (
+            f"Main {entity} register. One row per registered {entity}. "
+            "Use this for entity-level counts."
+        )
+
+    if role == "programme_register":
+        return (
+            f"Programme application register. One row per application to "
+            f"this programme (assigns its own functional ID, no version "
+            f"history). Use for programme-level counts; references entity "
+            f"registers via foundational_id."
+        )
+
+    # Satellite: figure out the aspect by stripping the entity-name prefix
+    # from the satellite tail.
+    aspect = tail
+    if parent_register and parent_register.lower().startswith(_REGISTRY_PREFIX):
+        parent_tail = parent_register.lower()[len(_REGISTRY_PREFIX):]
+        common = 0
+        for a, b in zip(parent_tail, tail):
+            if a != b:
+                break
+            common += 1
+        aspect = tail[common:].lstrip("_") or tail
+    if parent_register:
+        return (
+            f"Supporting table for {parent_register} — one row per "
+            f"{aspect.replace('_', ' ')} record. NOT one row per entity; "
+            f"use {parent_register} for entity-level counts."
+        )
+    return "Supporting table — see operator notes."
+
+
 def classify_by_sample(stats: ColumnStats) -> Tuple[Classification, Confidence, str]:
     """Use distinct count / null rate / value shapes to classify columns whose
     name didn't tell us anything."""

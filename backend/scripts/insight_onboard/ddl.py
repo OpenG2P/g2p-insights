@@ -134,7 +134,18 @@ def operational_catalog(p: Proposal) -> str:
                 "name": c.name,
                 "type": c.pg_type,
                 "pii": c.pii,
-                "description": c.reason or None,
+                # Intentionally NOT writing c.reason here — that's the PII
+                # classifier's debug rationale (e.g. "token `total` is a
+                # known safe keyword") meant for operator review in the
+                # proposal YAML, not user-facing column documentation.
+                # Leaking it into the runtime catalog primes the LLM with
+                # misleading hints: "size_total — token `total` is a known
+                # safe keyword" pattern-matches "how many total individuals?"
+                # and steers the model to SUM(size_total) on the households
+                # table instead of COUNT(*) on the individuals register.
+                # Real semantic descriptions can be added via a future
+                # operator-editable description field in the proposal.
+                "description": None,
             }
             if c.enum_values:
                 # Authoritative enum values from the registry extension.
@@ -145,12 +156,22 @@ def operational_catalog(p: Proposal) -> str:
             if c.mixin:
                 entry["mixin"] = c.mixin
             cols_out.append(entry)
-        tables_out.append({
+        table_entry: dict = {
             "name": t.safe_view_name,
             "schema": p.target_schema,
-            "description": f"PII-safe view over {p.source_schema}.{t.source}",
+            # `description` was operator-confirmed in the proposal — use it
+            # verbatim. Falls back to the source-table pointer if missing
+            # (older proposals or hand-written catalogs without role info).
+            "description": (
+                t.description
+                or f"PII-safe view over {p.source_schema}.{t.source}"
+            ),
+            "role": t.role,
             "columns": cols_out,
-        })
+        }
+        if t.parent_register:
+            table_entry["parent_register"] = t.parent_register
+        tables_out.append(table_entry)
 
     # Materialised views also appear as queryable entities.
     for mv in p.materialized_views:

@@ -61,6 +61,14 @@ class TableSpec(BaseModel):
     columns: List[ColumnSpec] = Field(default_factory=list)
     refresh: Optional[str] = None
     notes: Optional[str] = None
+    # OpenG2P registry concepts — set by `insight-onboard apply`.
+    # The LLM uses `role` to know which table is the entity-level register
+    # (use for "how many individuals?" counts) vs a supporting child table
+    # (use only when asking about the aspect that table holds).
+    # Values: "register" | "programme_register" | "table" | None (legacy catalogs).
+    role: Optional[str] = None
+    # For role=table: which register this table hangs off (the safe-view name).
+    parent_register: Optional[str] = None
 
     def safe_columns(self) -> List[ColumnSpec]:
         return [c for c in self.columns if c.pii != "pii"]
@@ -118,7 +126,19 @@ class SchemaService(BaseService):
         """
         Return the most relevant TableSpecs for the query.
 
-        MVP: keyword overlap score. Replace with pgvector + embedding model in v2.
+        Score tables by keyword overlap (MVP — replace with pgvector + embedding
+        model in v2). Then ALWAYS pad up to `top_k` with the remaining tables in
+        catalog order, so the LLM sees a meaningful comparison set even when only
+        one or zero tables match by name.
+
+        Why padding: with the naive scorer, a question like "how many
+        individuals?" against an NSR catalog scores `v_g2p_register_individuals_safe`
+        at 1 (matches `individuals`) and every other `_individual_*` table at 0
+        (only `individual` singular in their names, no stemmer). Without padding
+        the LLM would see exactly one table and be denied the comparison context
+        that helps it pick correctly — and worse, with no comparison set models
+        sometimes hallucinate table names from training data instead of using
+        what they were given.
         """
         if not self.catalog.tables:
             return []
@@ -136,7 +156,21 @@ class SchemaService(BaseService):
                 scored.append((overlap, table))
 
         scored.sort(key=lambda x: x[0], reverse=True)
-        return [t for _, t in scored[:top_k]] if scored else self.catalog.tables[:top_k]
+        ranked = [t for _, t in scored]
+
+        if len(ranked) >= top_k:
+            return ranked[:top_k]
+
+        # Pad with unranked tables (catalog order). De-dup via name to avoid
+        # adding a table that was already scored.
+        ranked_names = {t.name for t in ranked}
+        for t in self.catalog.tables:
+            if t.name in ranked_names:
+                continue
+            ranked.append(t)
+            if len(ranked) >= top_k:
+                break
+        return ranked[:top_k]
 
     @staticmethod
     def _tokenize(text: str) -> set[str]:

@@ -355,11 +355,28 @@ class LlmService(BaseService):
 
     @staticmethod
     def _schema_blob(tables: List[TableSpec]) -> str:
-        """Render the schema for the LLM prompt with enum values + units inline.
-        Stripping these regressed the LLM into hallucinating filter values like
-        `gender = 'FEMALE'` when the enum was `{M, F, O}`."""
+        """Render the schema for the LLM prompt with enum values, role tags,
+        and descriptions inline. Three things the model relies on heavily:
+          * **enum values** — stripping these regressed the LLM into
+            hallucinating filter values like `gender = 'FEMALE'` when the
+            enum was `{M, F, O}`.
+          * **role tag** ([REGISTER] / [PROGRAMME_REGISTER] / [TABLE]) —
+            without this the LLM picks satellite tables for entity-level
+            counts (e.g. counting disability records instead of individuals).
+          * **description** — explains what one row means and points
+            satellites at their parent register.
+        Registers are listed first so the model sees them before any
+        satellites — gives even weak retrievers a fair chance of picking
+        the right one."""
+        # Stable role-then-name sort: registers, then programme_registers,
+        # then tables. Within each bucket, alphabetical.
+        role_order = {"register": 0, "programme_register": 1, "table": 2}
+        sorted_tables = sorted(
+            tables,
+            key=lambda t: (role_order.get(t.role or "table", 3), t.name),
+        )
         rows = []
-        for t in tables:
+        for t in sorted_tables:
             cols: list[str] = []
             for c in t.safe_columns():
                 bits = [f"{c.name}:{c.type}"]
@@ -368,7 +385,8 @@ class LlmService(BaseService):
                 if c.unit:
                     bits.append(f"unit={c.unit}")
                 cols.append(" ".join(bits))
-            line = f"- {t.name} ({'; '.join(cols)})"
+            role_tag = f"[{t.role.upper()}] " if t.role else ""
+            line = f"- {role_tag}{t.name} ({'; '.join(cols)})"
             if t.description:
                 line += f"  -- {t.description}"
             rows.append(line)

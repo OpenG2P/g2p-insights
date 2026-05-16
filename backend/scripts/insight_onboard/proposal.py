@@ -36,6 +36,34 @@ class ProposalColumn:
 class ProposalTable:
     source: str
     safe_view_name: str
+    # OpenG2P concept (per docs.openg2p.org/.../registry/concepts):
+    #   * "register"           — main entity register (Individual, Household,
+    #                             Farmer, …). One row per registered entity.
+    #                             Assigns functional IDs; has version history.
+    #   * "programme_register" — application register for a benefit programme,
+    #                             managed by PBMS. One row per application.
+    #                             Assigns its own functional ID, no history.
+    #                             Auto-detected only when an extension model
+    #                             extends G2PProgramRegister; otherwise the
+    #                             operator marks it manually.
+    #   * "table"              — supporting one-to-many child of a register
+    #                             (disabilities, livelihoods, assets, …).
+    #                             No functional ID; follows parent's history.
+    #
+    # The scan auto-suggests `register` vs `table` from the name pattern
+    # (single-segment after `g2p_register_` → register; multi-segment →
+    # table) and from extension mixin info when present. The operator
+    # confirms / overrides during proposal review.
+    role: str = "table"                     # "register" | "programme_register" | "table"
+    # For satellites only: the safe_view_name of the parent register.
+    # Auto-suggested via longest-common-name-prefix heuristic; operator
+    # overrides if wrong.
+    parent_register: Optional[str] = None
+    # Human-readable description that flows into the operational catalog
+    # and onwards into the LLM's schema view. Auto-generated as a starting
+    # point; operator should refine for deployment-specific nuance (e.g.,
+    # "Only registered since 2019 — older records are in the legacy view").
+    description: Optional[str] = None
     columns: List[ProposalColumn] = field(default_factory=list)
 
 
@@ -72,10 +100,25 @@ def proposal_to_yaml(p: Proposal) -> str:
     parts.append("# Insight onboarding proposal — review and edit.\n")
     parts.append("# Every `?` value MUST be resolved before `insight-onboard apply` will run.\n")
     parts.append("#\n")
-    parts.append("# Classification meanings:\n")
+    parts.append("# Column classification:\n")
     parts.append("#   pii    — directly identifies a person → keep: false\n")
     parts.append("#   quasi  — contributes to re-identification → keep: true (relies on k-anonymity)\n")
     parts.append("#   safe   — pure analytical → keep: true\n")
+    parts.append("#\n")
+    parts.append("# Table role (OpenG2P concepts — see docs.openg2p.org/.../registry/concepts):\n")
+    parts.append("#   register           — main entity register (Individual, Household, …).\n")
+    parts.append("#                        One row per registered entity. Use for entity-level counts.\n")
+    parts.append("#   programme_register — application register for a benefit programme (PBMS).\n")
+    parts.append("#                        Auto-detected only when extension class extends\n")
+    parts.append("#                        G2PProgramRegister; otherwise mark manually.\n")
+    parts.append("#   table              — supporting one-to-many child of a register\n")
+    parts.append("#                        (disabilities, livelihoods, assets, …). Set\n")
+    parts.append("#                        parent_register to the safe_view_name of its parent.\n")
+    parts.append("#\n")
+    parts.append("# Roles auto-suggested from table name + extension mixins. **Verify each one** —\n")
+    parts.append("# the LLM uses `role` and `description` to decide which table answers an\n")
+    parts.append("# entity-level question. A misclassified satellite tagged as `register` would\n")
+    parts.append("# cause undercounts (e.g. counting disability records instead of individuals).\n")
     parts.append("\n")
     parts.append(yaml.safe_dump(
         {
@@ -88,6 +131,9 @@ def proposal_to_yaml(p: Proposal) -> str:
                 {
                     "source": t.source,
                     "safe_view_name": t.safe_view_name,
+                    "role": t.role,
+                    "parent_register": t.parent_register,
+                    "description": t.description,
                     "columns": [asdict(c) for c in t.columns],
                 }
                 for t in p.analytical_tables
@@ -130,6 +176,9 @@ def load_proposal(path: str) -> Proposal:
             ProposalTable(
                 source=t["source"],
                 safe_view_name=t["safe_view_name"],
+                role=t.get("role", "table"),
+                parent_register=t.get("parent_register"),
+                description=t.get("description"),
                 columns=[ProposalColumn(**c) for c in t.get("columns", [])],
             )
             for t in data.get("analytical_tables", [])
@@ -153,6 +202,39 @@ def validate_for_apply(p: Proposal) -> List[str]:
                     f"Unresolved column {t.source}.{c.name}: pii={c.pii} keep={c.keep}. "
                     "Please review and set explicit values."
                 )
+        if t.role not in ("register", "programme_register", "table"):
+            errors.append(
+                f"Table {t.source} has unknown role={t.role!r}. "
+                "Must be one of: register, programme_register, table."
+            )
+        if t.role == "table" and not t.parent_register:
+            errors.append(
+                f"Table {t.source} is role=table but has no parent_register. "
+                "Set parent_register to the safe_view_name of its parent register."
+            )
     if not p.deployment.get("country_code"):
         errors.append("deployment.country_code is empty — please fill in (e.g. 'ET').")
     return errors
+
+
+def validate_for_apply_warnings(p: Proposal) -> List[str]:
+    """Non-fatal warnings the apply step prints alongside errors. Returning
+    something here doesn't block `apply`, but a careful operator should
+    address them. Typical case: heuristic guessed too many `register`
+    tables and the operator forgot to demote some to `table`."""
+    warnings: List[str] = []
+    n_reg = sum(1 for t in p.analytical_tables if t.role == "register")
+    n_prog = sum(1 for t in p.analytical_tables if t.role == "programme_register")
+    if n_reg == 0 and n_prog == 0:
+        warnings.append(
+            "No tables marked role=register or role=programme_register. "
+            "Entity-level questions ('how many individuals') have no clean "
+            "answer. Confirm at least one register exists in this registry."
+        )
+    if n_reg > 3:
+        warnings.append(
+            f"{n_reg} tables marked role=register. OpenG2P deployments "
+            f"typically have 1–2 (individuals + households). Double-check "
+            "the proposal — heuristic likely over-promoted satellites."
+        )
+    return warnings

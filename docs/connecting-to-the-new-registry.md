@@ -105,7 +105,23 @@ test stack.
 
 ### TL;DR — three terminals
 
+The backend reads its catalog from a **directory** named by
+`INSIGHT_CATALOG_PATH`. That directory must contain a file called
+`schema.yaml` (the backend looks for that exact name; the onboarding
+tool's `--catalog-out` flag lets you write the file with the right name
+in the right place — no rename needed):
+
 ```bash
+# One-time, per registry — write the catalog directly into the dir you'll
+# point INSIGHT_CATALOG_PATH at. Pick any directory name you like; the
+# filename inside MUST be schema.yaml.
+mkdir -p $HOME/insight-catalogs/<country>
+python -m insight_onboard apply \
+    --registry-db postgresql://dba:***@<registry-host>:5432/<registry_db> \
+    --catalog-out $HOME/insight-catalogs/<country>/schema.yaml \
+    --helm-out    $HOME/insight-catalogs/<country>/values-insight.yaml \
+    /tmp/proposal.yaml
+
 # Terminal 1: backend, pointed at your registry.
 cd backend
 cat > .env <<EOF
@@ -124,10 +140,7 @@ INSIGHT_LLM__API_KEY=sk-or-...
 INSIGHT_LLM__MODEL=qwen/qwen3-32b
 EOF
 
-mkdir -p $HOME/insight-catalogs/<country>
-cp /tmp/catalog.yaml  $HOME/insight-catalogs/<country>/schema.yaml
-
-./scripts/dev_run.sh           # backend up on http://localhost:8000
+./scripts/dev_run.sh            # backend up on http://localhost:8000
 
 # Terminal 2: frontend.
 cd frontend
@@ -140,29 +153,52 @@ open http://localhost:5173      # use the Ask tab against your registry
 
 One-time prereqs you only do the first time you switch to a new
 registry: the `insight` schema bootstrap (see
-[Known gap](#known-gap-insight_ai-cant-write-to-the-insight-schema)) and
-having the onboarding artefacts (catalog.yaml + insight_ai password).
+[Known gap](#known-gap-insight_ai-cant-write-to-the-insight-schema)).
+
+**Why a directory and not a file?** The backend also looks in the same
+dir for two optional files: `pii_recognizers.yaml` (country-specific
+Presidio patterns) and `viz_templates.yaml` (visualisation defaults).
+If you don't have them, the backend just runs without them — no error.
 
 The rest of this section is the same five steps spelled out, with
 options + troubleshooting.
 
-### 1. Copy the catalog into the path the backend reads
+### 1. Put the catalog where the backend will read it
 
-The backend loads `<INSIGHT_CATALOG_PATH>/schema.yaml`. By default
-`dev_run.sh` sets that to `test-stack/postgres/catalog/`. Either:
+The backend reads a directory named by `INSIGHT_CATALOG_PATH`. Inside
+that directory it expects:
+
+| File | Required? | What it is |
+|------|-----------|------------|
+| `schema.yaml` | yes | The operational catalog (tables, columns, PII tags, enum values, safe_views allow-list) |
+| `pii_recognizers.yaml` | no | Country-specific Presidio regex patterns. Backend runs without it. |
+| `viz_templates.yaml` | no | Visualisation template defaults. Backend runs without it. |
+
+By default `dev_run.sh` sets `INSIGHT_CATALOG_PATH` to
+`test-stack/postgres/catalog/`, which is why the test stack works out of
+the box. For your registry, pick a fresh directory and have onboarding
+write directly into it — no rename:
 
 ```bash
-# Option A — point at a fresh catalog dir
 mkdir -p ~/insight-catalogs/<country>
-cp /tmp/catalog.yaml ~/insight-catalogs/<country>/schema.yaml
-# Then in backend/.env (see step 2): INSIGHT_CATALOG_PATH=/Users/you/insight-catalogs/<country>
-
-# Option B — overwrite the test-stack catalog in place
-cp /tmp/catalog.yaml backend/../test-stack/postgres/catalog/schema.yaml
+python -m insight_onboard apply \
+    --catalog-out ~/insight-catalogs/<country>/schema.yaml \
+    --helm-out    ~/insight-catalogs/<country>/values-insight.yaml \
+    /tmp/proposal.yaml \
+    --registry-db postgresql://dba:***@<registry-host>:5432/<registry_db>
 ```
 
-Option A is cleaner — you can switch between registries by changing one
-env var, and you don't lose the test-stack baseline.
+You'll point `INSIGHT_CATALOG_PATH` at `~/insight-catalogs/<country>`
+in step 2 below. Switching between registries later is just an env-var
+change — no need to overwrite the test-stack baseline.
+
+> **Why does the filename have to be `schema.yaml` specifically?**
+> The backend hardcodes that filename in
+> [services/schema_service.py](../backend/src/openg2p_insight/services/schema_service.py)
+> (`Path(catalog_path) / "schema.yaml"`). The onboarding tool's
+> `--catalog-out` flag is just an output path — pass the full path
+> including the filename to skip the copy/rename step that earlier
+> versions of this doc described.
 
 ### 2. Override DB + catalog env vars in `backend/.env`
 

@@ -43,7 +43,10 @@ from .heuristics import (
     classify_by_type,
     classify_skip_table,
     combine_classifications,
+    describe_table,
     load_rules,
+    suggest_parent_register,
+    suggest_table_role,
 )
 from .inspector import column_stats, list_columns, list_tables
 from .llm_classifier import classify_via_llm
@@ -54,6 +57,7 @@ from .proposal import (
     load_proposal,
     proposal_to_yaml,
     validate_for_apply,
+    validate_for_apply_warnings,
 )
 
 
@@ -161,6 +165,40 @@ async def cmd_scan(args: argparse.Namespace) -> int:
                 safe_view_name=f"v_{t}_safe" if not t.startswith("v_") else t,
                 columns=prop_cols,
             ))
+
+        # Second pass: assign role / parent_register / description per table.
+        # Done after the column scan so we know the full set of registers
+        # (a satellite scanned before its parent would otherwise have
+        # parent=None). Three info sources, in priority order:
+        #   1. Extension (when present): `suggested_role` directly attaches
+        #      `register` / `programme_register` / `table`, with the entity
+        #      filter already applied.
+        #   2. Name heuristic: single-segment after `g2p_register_` →
+        #      register; multi-segment → table. (Cannot detect
+        #      programme_register from name alone.)
+        # Operator confirms / overrides during proposal review.
+        for tbl in analytical:
+            ext_model = ext_md.model_for_table(tbl.source) if ext_md is not None else None
+            if ext_model is not None and ext_model.suggested_role:
+                tbl.role = ext_model.suggested_role
+            else:
+                tbl.role = suggest_table_role(tbl.source)
+
+        register_sources = [tbl.source for tbl in analytical if tbl.role == "register"]
+        for tbl in analytical:
+            if tbl.role == "table":
+                parent_source = suggest_parent_register(tbl.source, register_sources)
+                if parent_source is not None:
+                    # Catalog references views, not source tables. Map source
+                    # → safe_view_name via the analytical set.
+                    parent_view = next(
+                        (p.safe_view_name for p in analytical if p.source == parent_source),
+                        None,
+                    )
+                    tbl.parent_register = parent_view
+            # description uses safe-view names everywhere — that's what
+            # the LLM actually sees in its prompt.
+            tbl.description = describe_table(tbl.source, tbl.role, tbl.parent_register)
 
         # Optional LLM pass on ambiguous columns. Only fires for columns
         # whose classifier actually sampled (those have a ColumnStats);
@@ -372,6 +410,11 @@ async def cmd_apply(args: argparse.Namespace) -> int:
         for e in errors:
             print(f"  - {e}")
         return 2
+
+    # Non-fatal warnings — print but don't block. Operator gets a chance to
+    # ctrl-C before the confirmation prompt below.
+    for w in validate_for_apply_warnings(p):
+        print(f"[apply] WARNING: {w}")
 
     db_name = _db_name_from_dsn(args.registry_db)
     role_name = args.role or "insight_ai"

@@ -80,6 +80,33 @@ Hard rules (the validator will REJECT otherwise):
      (Unqualified column refs are accepted as long as some allow-listed table
      in the query has that column. Use a table alias when ambiguous.)
   4. NO `SELECT *`. Always list columns explicitly. `COUNT(*)` is fine.
+
+Pick the right table for the question — read the role tag:
+
+  Each table in "Available tables" is prefixed with [REGISTER],
+  [PROGRAMME_REGISTER], or [TABLE]:
+
+    * [REGISTER]           — main entity register. One row per registered
+                              individual / household / etc. **Use this for
+                              entity-level questions** ("how many individuals",
+                              "what's the avg PMT score", "individuals by region").
+    * [PROGRAMME_REGISTER] — application register for one benefit programme.
+                              One row per application. Use for programme-level
+                              questions ("how many applied to programme X").
+    * [TABLE]              — supporting one-to-many child of a register.
+                              One row per *aspect record* — disabilities,
+                              livelihoods, assets, etc. **Do NOT use for
+                              entity counts** — a row here means the entity
+                              has at least one record of that aspect, and
+                              entities without any aspect record are missing
+                              entirely. Counting `disabilities` does not
+                              give you the number of individuals; it gives
+                              you the number of disability records (multiple
+                              per individual; zero for unaffected individuals).
+                              Use only when the question is specifically
+                              about the aspect. The table's description
+                              points at the parent register to use instead
+                              for entity counts.
   5. For enum-typed columns, filter values MUST match the declared
      `enum={...}` characters exactly. Don't invent values like 'FEMALE'
      when the enum is {M, F, O} — emit 'F'. If the user's word maps
