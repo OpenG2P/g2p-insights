@@ -37,6 +37,23 @@ _config = Settings.get_config(strict=False)
 _logger = logging.getLogger(_config.logging_default_logger_name)
 
 
+def _log_llm_input(provider: str, tables, history, messages) -> None:
+    """Debug instrumentation — logs exactly what the LLM receives so we can
+    diagnose wrong-table picks. The summary (table names + history turn
+    count) logs at INFO so it shows in normal dev logs; the full rendered
+    message list logs at DEBUG. TEMPORARY — remove once table-selection is
+    stable."""
+    table_names = [getattr(t, "name", "?") for t in tables]
+    _logger.info("LLM-INPUT [%s] %d tables sent: %s", provider, len(table_names), table_names)
+    hist_preview = [
+        {"role": m.role, "content": (m.content[:160] + "…") if len(m.content) > 160 else m.content}
+        for m in history
+    ]
+    _logger.info("LLM-INPUT [%s] %d history turns: %s", provider, len(history), hist_preview)
+    if _logger.isEnabledFor(logging.DEBUG):
+        _logger.debug("LLM-INPUT [%s] full messages: %s", provider, messages)
+
+
 # -----------------------------------------------------------------------------
 # Result types
 # -----------------------------------------------------------------------------
@@ -218,6 +235,7 @@ class LlmService(BaseService):
         history: List[ConvMessage],
     ) -> PlanResult:
         messages = self._anthropic_messages(sanitized_question, tables, history)
+        _log_llm_input("anthropic", tables, history, messages)
         response = await self._client.messages.create(
             model=_config.llm.model,
             max_tokens=_config.llm.max_tokens,
@@ -251,6 +269,7 @@ class LlmService(BaseService):
         history: List[ConvMessage],
     ) -> PlanResult:
         messages = self._openai_messages(sanitized_question, tables, history)
+        _log_llm_input("openai_compatible", tables, history, messages)
         response = await self._client.chat.completions.create(
             model=_config.llm.model,
             max_tokens=_config.llm.max_tokens,

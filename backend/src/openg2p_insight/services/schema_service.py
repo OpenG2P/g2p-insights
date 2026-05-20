@@ -122,30 +122,51 @@ class SchemaService(BaseService):
         self.catalog = Catalog.model_validate(data)
         _logger.info("Loaded catalog with %d tables", len(self.catalog.tables))
 
+    # Catalogs at or below this size are sent to the LLM in full — keyword
+    # retrieval only earns its keep on large schemas. A typical registry has
+    # a couple of registers + a handful of supporting tables (NSR has 12
+    # views), all of which fit comfortably in context. Dropping any table
+    # risks hiding the one the question needs — we saw the `individuals`
+    # register get cut purely by alphabetical tie-breaking under the old
+    # top-k scorer, forcing the LLM to guess the table name.
+    _SEND_ALL_THRESHOLD = 25
+
     async def retrieve_relevant(self, query: str, top_k: int = 8) -> List[TableSpec]:
         """
-        Return the most relevant TableSpecs for the query.
+        Return the TableSpecs to put in the LLM prompt for this query.
 
-        Score tables by keyword overlap (MVP — replace with pgvector + embedding
-        model in v2). Then ALWAYS pad up to `top_k` with the remaining tables in
-        catalog order, so the LLM sees a meaningful comparison set even when only
-        one or zero tables match by name.
+        Strategy:
+          1. Small catalog (≤ _SEND_ALL_THRESHOLD): send everything. Retrieval
+             can only hurt here — there's no token budget pressure and any
+             omission risks hiding the needed table.
+          2. Large catalog: ALWAYS include every register / programme_register
+             (the backbone of entity questions — never drop one), then fill
+             the remaining slots by keyword-overlap score, then pad with
+             whatever's left.
 
-        Why padding: with the naive scorer, a question like "how many
-        individuals?" against an NSR catalog scores `v_g2p_register_individuals_safe`
-        at 1 (matches `individuals`) and every other `_individual_*` table at 0
-        (only `individual` singular in their names, no stemmer). Without padding
-        the LLM would see exactly one table and be denied the comparison context
-        that helps it pick correctly — and worse, with no comparison set models
-        sometimes hallucinate table names from training data instead of using
-        what they were given.
+        Keyword scoring is the MVP retriever; replace with pgvector +
+        embeddings in v2.
         """
-        if not self.catalog.tables:
+        all_tables = self.catalog.tables
+        if not all_tables:
             return []
 
+        # 1. Small catalog → send all. `top_k` is treated as a floor here so
+        #    callers asking for more than the threshold still get everything.
+        if len(all_tables) <= max(top_k, self._SEND_ALL_THRESHOLD):
+            return list(all_tables)
+
+        # 2. Large catalog. Registers always make the cut.
+        registers = [
+            t for t in all_tables
+            if (t.role or "") in ("register", "programme_register")
+        ]
+        register_names = {t.name for t in registers}
+        others = [t for t in all_tables if t.name not in register_names]
+
         tokens = self._tokenize(query)
-        scored: List[tuple[float, TableSpec]] = []
-        for table in self.catalog.tables:
+        scored: List[tuple[int, TableSpec]] = []
+        for table in others:
             haystack_tokens = self._tokenize(
                 " ".join(
                     [table.name, table.description or "", *(c.name for c in table.columns)]
@@ -154,23 +175,24 @@ class SchemaService(BaseService):
             overlap = len(tokens & haystack_tokens)
             if overlap:
                 scored.append((overlap, table))
-
         scored.sort(key=lambda x: x[0], reverse=True)
-        ranked = [t for _, t in scored]
 
-        if len(ranked) >= top_k:
-            return ranked[:top_k]
-
-        # Pad with unranked tables (catalog order). De-dup via name to avoid
-        # adding a table that was already scored.
-        ranked_names = {t.name for t in ranked}
-        for t in self.catalog.tables:
-            if t.name in ranked_names:
-                continue
-            ranked.append(t)
-            if len(ranked) >= top_k:
+        # Registers first (never dropped), then keyword-ranked others, then
+        # pad with any remaining tables until we hit top_k.
+        result: List[TableSpec] = list(registers)
+        for _, t in scored:
+            if len(result) >= top_k:
                 break
-        return ranked[:top_k]
+            result.append(t)
+        if len(result) < top_k:
+            chosen = {t.name for t in result}
+            for t in others:
+                if t.name in chosen:
+                    continue
+                result.append(t)
+                if len(result) >= top_k:
+                    break
+        return result
 
     @staticmethod
     def _tokenize(text: str) -> set[str]:

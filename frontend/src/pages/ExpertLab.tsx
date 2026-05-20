@@ -112,6 +112,30 @@ export default function ExpertLab() {
       .map((c) => c.name);
   }, [currentTableCols]);
 
+  // Whenever the entity's available columns change (entity switched, or
+  // catalog finished loading), drop any selected column that isn't valid for
+  // this entity and substitute a real one. Without this, the initial state
+  // defaults (pmt_score, monthly_income — test-stack names) get sent to the
+  // backend even when the selected entity has no such column, causing
+  // `column "pmt_score" does not exist`. We keep selections that ARE still
+  // valid (so a prefill from Ask survives), and only replace the invalid ones.
+  useEffect(() => {
+    if (!currentTableCols.length) return; // catalog not loaded for this entity yet
+    setColumn((prev) => (numericColumns.includes(prev) ? prev : (numericColumns[0] || "")));
+    setGroupBy((prev) => (categoricalColumns.includes(prev) ? prev : (categoricalColumns[0] || "")));
+    setColumns((prev) => {
+      const valid = prev.filter((c) => numericColumns.includes(c) || categoricalColumns.includes(c));
+      return valid.length ? valid : numericColumns.slice(0, 2);
+    });
+    setRow((prev) => (categoricalColumns.includes(prev) ? prev : (categoricalColumns[0] || "")));
+    setCol((prev) =>
+      categoricalColumns.includes(prev)
+        ? prev
+        : (categoricalColumns[1] || categoricalColumns[0] || ""),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entity, numericColumns, categoricalColumns]);
+
   // Read any pre-fill from sessionStorage (set by Ask when redirecting).
   useEffect(() => {
     const raw = sessionStorage.getItem("insight.expertPrefill");

@@ -13,40 +13,37 @@ tables:
   - name: created_by
     type: character varying
     pii: safe
-    description: token `created` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: created_at
     type: timestamp without time zone
     pii: safe
-    description: token `created` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: last_approved_at
     type: timestamp without time zone
     pii: safe
-    description: 'extension prior: column declared in G2PRegister mixin (audit/workflow
-      metadata)'
+    description: null
     mixin: G2PRegister
   - name: last_approved_by
     type: character varying
     pii: safe
-    description: 'extension prior: column declared in G2PRegister mixin (audit/workflow
-      metadata)'
+    description: null
     mixin: G2PRegister
   - name: record_status
     type: character varying
     pii: safe
-    description: token `status` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: record_status_reason
     type: character varying
     pii: safe
-    description: token `status` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: asset_type
     type: character varying
     pii: safe
-    description: 'extension enum: AssetTypeEnum = [''LAND'', ''LIVESTOCK'', ''PRODUCTIVE_TOOL'',
-      ''CONSUMER_DURABLE'', ''VEHICLE'', ''OTHER'']'
+    description: null
     enum:
     - LAND
     - LIVESTOCK
@@ -58,27 +55,27 @@ tables:
   - name: asset_category
     type: character varying
     pii: safe
-    description: low cardinality (9) — likely an enum
+    description: null
     mixin: G2PHouseholdAsset
   - name: quantity
     type: integer
     pii: safe
-    description: low cardinality (6) — likely an enum
+    description: null
     mixin: G2PHouseholdAsset
   - name: size_value
     type: numeric
     pii: safe
-    description: low cardinality (1) — likely an enum
+    description: null
     mixin: G2PHouseholdAsset
   - name: size_unit
     type: character varying
     pii: safe
-    description: low cardinality (1) — likely an enum
+    description: null
     mixin: G2PHouseholdAsset
   - name: size_band
     type: character varying
     pii: safe
-    description: low cardinality (4) — likely an enum
+    description: null
     mixin: G2PHouseholdAsset
   parent_register: v_g2p_register_households_safe
 - name: v_g2p_register_household_housing_and_services_safe
@@ -91,40 +88,37 @@ tables:
   - name: created_by
     type: character varying
     pii: safe
-    description: token `created` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: created_at
     type: timestamp without time zone
     pii: safe
-    description: token `created` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: last_approved_at
     type: timestamp without time zone
     pii: safe
-    description: 'extension prior: column declared in G2PRegister mixin (audit/workflow
-      metadata)'
+    description: null
     mixin: G2PRegister
   - name: last_approved_by
     type: character varying
     pii: safe
-    description: 'extension prior: column declared in G2PRegister mixin (audit/workflow
-      metadata)'
+    description: null
     mixin: G2PRegister
   - name: record_status
     type: character varying
     pii: safe
-    description: token `status` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: record_status_reason
     type: character varying
     pii: safe
-    description: token `status` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: dwelling_type
     type: character varying
     pii: safe
-    description: 'extension enum: DwellingTypeEnum = [''PERMANENT'', ''SEMI_PERMANENT'',
-      ''TEMPORARY'']'
+    description: null
     enum:
     - PERMANENT
     - SEMI_PERMANENT
@@ -133,8 +127,7 @@ tables:
   - name: roof_material
     type: character varying
     pii: safe
-    description: 'extension enum: RoofMaterialEnum = [''THATCH'', ''CORRUGATED_IRON'',
-      ''CONCRETE'', ''TILE'', ''PLASTIC_SHEET'', ''OTHER'']'
+    description: null
     enum:
     - THATCH
     - CORRUGATED_IRON
@@ -146,8 +139,7 @@ tables:
   - name: wall_material
     type: character varying
     pii: safe
-    description: 'extension enum: WallMaterialEnum = [''MUD'', ''WOOD'', ''BAMBOO'',
-      ''STONE'', ''BRICK'', ''CONCRETE'', ''OTHER'']'
+    description: null
     enum:
     - MUD
     - WOOD
@@ -160,8 +152,7 @@ tables:
   - name: floor_material
     type: character varying
     pii: safe
-    description: 'extension enum: FloorMaterialEnum = [''EARTH'', ''WOOD'', ''CEMENT'',
-      ''TILE'', ''OTHER'']'
+    description: null
     enum:
     - EARTH
     - WOOD
@@ -172,7 +163,7 @@ tables:
   - name: tenure_status
     type: character varying
     pii: safe
-    description: token `status` is a known safe keyword
+    description: null
     enum:
     - OWNED
     - RENTED
@@ -182,8 +173,7 @@ tables:
   - name: water_source_type
     type: character varying
     pii: safe
-    description: 'extension enum: WaterSourceTypeEnum = [''PIPED'', ''PUBLIC_TAP'',
-      ''WELL'', ''SPRING'', ''SURFACE_WATER'', ''RAINWATER'', ''TANKER_TRUCK'', ''OTHER'']'
+    description: null
     enum:
     - PIPED
     - PUBLIC_TAP
@@ -197,13 +187,12 @@ tables:
   - name: water_distance_minutes
     type: integer
     pii: safe
-    description: low cardinality (2) — likely an enum
+    description: null
     mixin: G2PHouseholdHousingAndServices
   - name: sanitation_type
     type: character varying
     pii: safe
-    description: 'extension enum: SanitationTypeEnum = [''FLUSH_TOILET'', ''PIT_LATRINE'',
-      ''COMPOSTING_TOILET'', ''SHARED'', ''OPEN'', ''OTHER'']'
+    description: null
     enum:
     - FLUSH_TOILET
     - PIT_LATRINE
@@ -215,8 +204,7 @@ tables:
   - name: lighting_source
     type: character varying
     pii: safe
-    description: 'extension enum: LightingSourceEnum = [''GRID'', ''SOLAR'', ''GENERATOR'',
-      ''KEROSENE'', ''CANDLE'', ''NONE'']'
+    description: null
     enum:
     - GRID
     - SOLAR
@@ -228,8 +216,7 @@ tables:
   - name: cooking_fuel_type
     type: character varying
     pii: safe
-    description: 'extension enum: CookingFuelEnum = [''ELECTRICITY'', ''GAS'', ''KEROSENE'',
-      ''CHARCOAL'', ''FIREWOOD'', ''BIOMASS'', ''OTHER'']'
+    description: null
     enum:
     - ELECTRICITY
     - GAS
@@ -250,44 +237,42 @@ tables:
   - name: created_by
     type: character varying
     pii: safe
-    description: token `created` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: created_at
     type: timestamp without time zone
     pii: safe
-    description: token `created` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: last_approved_at
     type: timestamp without time zone
     pii: safe
-    description: 'extension prior: column declared in G2PRegister mixin (audit/workflow
-      metadata)'
+    description: null
     mixin: G2PRegister
   - name: last_approved_by
     type: character varying
     pii: safe
-    description: 'extension prior: column declared in G2PRegister mixin (audit/workflow
-      metadata)'
+    description: null
     mixin: G2PRegister
   - name: record_status
     type: character varying
     pii: safe
-    description: token `status` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: record_status_reason
     type: character varying
     pii: safe
-    description: token `status` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: program_start_date
     type: date
     pii: safe
-    description: date — temporal scalar, analytical
+    description: null
     mixin: G2PHouseholdProgram
   - name: program_exit_date
     type: date
     pii: safe
-    description: date — temporal scalar, analytical
+    description: null
     mixin: G2PHouseholdProgram
   parent_register: v_g2p_register_households_safe
 - name: v_g2p_register_households_safe
@@ -299,56 +284,52 @@ tables:
   - name: created_by
     type: character varying
     pii: safe
-    description: token `created` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: created_at
     type: timestamp without time zone
     pii: safe
-    description: token `created` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: last_approved_at
     type: timestamp without time zone
     pii: safe
-    description: 'extension prior: column declared in G2PRegister mixin (audit/workflow
-      metadata)'
+    description: null
     mixin: G2PRegister
   - name: last_approved_by
     type: character varying
     pii: safe
-    description: 'extension prior: column declared in G2PRegister mixin (audit/workflow
-      metadata)'
+    description: null
     mixin: G2PRegister
   - name: record_status
     type: character varying
     pii: safe
-    description: token `status` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: record_status_reason
     type: character varying
     pii: safe
-    description: token `status` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: altitude
     type: character varying
     pii: quasi
-    description: 'extension prior: column declared in G2PGeo mixin (geographic — re-id
-      risk)'
+    description: null
     mixin: G2PGeo
   - name: country_code
     type: character varying
     pii: quasi
-    description: 'extension prior: column declared in G2PGeo mixin (geographic — re-id
-      risk)'
+    description: null
     mixin: G2PGeo
   - name: geo_lowest_level_value_id
     type: character varying
     pii: safe
-    description: token `level` is a known safe keyword
+    description: null
     mixin: G2PGeo
   - name: headship_type
     type: character varying
     pii: safe
-    description: 'safe pattern: headship type'
+    description: null
     enum:
     - MALE_HEADED
     - FEMALE_HEADED
@@ -359,58 +340,57 @@ tables:
   - name: husband_dead
     type: boolean
     pii: safe
-    description: low cardinality (1) — likely an enum
+    description: null
     mixin: G2PHousehold
   - name: husband_dead_date
     type: date
     pii: safe
-    description: date — temporal scalar, analytical
+    description: null
     mixin: G2PHousehold
   - name: size_total
     type: integer
     pii: safe
-    description: token `total` is a known safe keyword
+    description: null
     mixin: G2PHousehold
   - name: size_adults
     type: integer
     pii: safe
-    description: low cardinality (2) — likely an enum
+    description: null
     mixin: G2PHousehold
   - name: size_children_u5
     type: integer
     pii: safe
-    description: low cardinality (3) — likely an enum
+    description: null
     mixin: G2PHousehold
   - name: size_school_age
     type: integer
     pii: quasi
-    description: token `age` is a quasi-identifier
+    description: null
     mixin: G2PHousehold
   - name: size_elderly
     type: integer
     pii: safe
-    description: low cardinality (2) — likely an enum
+    description: null
     mixin: G2PHousehold
   - name: number_of_female_members
     type: integer
     pii: safe
-    description: low cardinality (3) — likely an enum
+    description: null
     mixin: G2PHousehold
   - name: number_of_male_members
     type: integer
     pii: safe
-    description: low cardinality (3) — likely an enum
+    description: null
     mixin: G2PHousehold
   - name: elderly_member_present
     type: boolean
     pii: safe
-    description: low cardinality (2) — likely an enum
+    description: null
     mixin: G2PHousehold
   - name: dwelling_type
     type: character varying
     pii: safe
-    description: 'extension enum: DwellingTypeEnum = [''PERMANENT'', ''SEMI_PERMANENT'',
-      ''TEMPORARY'']'
+    description: null
     enum:
     - PERMANENT
     - SEMI_PERMANENT
@@ -419,22 +399,22 @@ tables:
   - name: roof_material
     type: character varying
     pii: safe
-    description: low cardinality (4) — likely an enum
+    description: null
     mixin: G2PHousehold
   - name: wall_material
     type: character varying
     pii: safe
-    description: low cardinality (3) — likely an enum
+    description: null
     mixin: G2PHousehold
   - name: floor_material
     type: character varying
     pii: safe
-    description: low cardinality (3) — likely an enum
+    description: null
     mixin: G2PHousehold
   - name: tenure_status
     type: character varying
     pii: safe
-    description: token `status` is a known safe keyword
+    description: null
     enum:
     - OWNED
     - RENTED
@@ -444,18 +424,17 @@ tables:
   - name: rooms_count
     type: integer
     pii: safe
-    description: token `count` is a known safe keyword
+    description: null
     mixin: G2PHousehold
   - name: overcrowding_indicator
     type: numeric
     pii: safe
-    description: low cardinality (5) — likely an enum
+    description: null
     mixin: G2PHousehold
   - name: water_source_type
     type: character varying
     pii: safe
-    description: 'extension enum: WaterSourceTypeEnum = [''PIPED'', ''PUBLIC_TAP'',
-      ''WELL'', ''SPRING'', ''SURFACE_WATER'', ''RAINWATER'', ''TANKER_TRUCK'', ''OTHER'']'
+    description: null
     enum:
     - PIPED
     - PUBLIC_TAP
@@ -469,13 +448,12 @@ tables:
   - name: water_distance_minutes
     type: integer
     pii: safe
-    description: low cardinality (5) — likely an enum
+    description: null
     mixin: G2PHousehold
   - name: sanitation_type
     type: character varying
     pii: safe
-    description: 'extension enum: SanitationTypeEnum = [''FLUSH_TOILET'', ''PIT_LATRINE'',
-      ''COMPOSTING_TOILET'', ''SHARED'', ''OPEN'', ''OTHER'']'
+    description: null
     enum:
     - FLUSH_TOILET
     - PIT_LATRINE
@@ -487,8 +465,7 @@ tables:
   - name: lighting_source
     type: character varying
     pii: safe
-    description: 'extension enum: LightingSourceEnum = [''GRID'', ''SOLAR'', ''GENERATOR'',
-      ''KEROSENE'', ''CANDLE'', ''NONE'']'
+    description: null
     enum:
     - GRID
     - SOLAR
@@ -500,8 +477,7 @@ tables:
   - name: cooking_fuel_type
     type: character varying
     pii: safe
-    description: 'extension enum: CookingFuelEnum = [''ELECTRICITY'', ''GAS'', ''KEROSENE'',
-      ''CHARCOAL'', ''FIREWOOD'', ''BIOMASS'', ''OTHER'']'
+    description: null
     enum:
     - ELECTRICITY
     - GAS
@@ -521,39 +497,37 @@ tables:
   - name: created_by
     type: character varying
     pii: safe
-    description: token `created` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: created_at
     type: timestamp without time zone
     pii: safe
-    description: token `created` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: last_approved_at
     type: timestamp without time zone
     pii: safe
-    description: 'extension prior: column declared in G2PRegister mixin (audit/workflow
-      metadata)'
+    description: null
     mixin: G2PRegister
   - name: last_approved_by
     type: character varying
     pii: safe
-    description: 'extension prior: column declared in G2PRegister mixin (audit/workflow
-      metadata)'
+    description: null
     mixin: G2PRegister
   - name: record_status
     type: character varying
     pii: safe
-    description: token `status` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: record_status_reason
     type: character varying
     pii: safe
-    description: token `status` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: disability_domain
     type: character varying
     pii: quasi
-    description: token `disability` is a quasi-identifier
+    description: null
     enum:
     - VISION
     - HEARING
@@ -565,7 +539,7 @@ tables:
   - name: disability_severity
     type: character varying
     pii: quasi
-    description: token `disability` is a quasi-identifier
+    description: null
     enum:
     - NO_DIFFICULTY
     - SOME_DIFFICULTY
@@ -583,44 +557,42 @@ tables:
   - name: created_by
     type: character varying
     pii: safe
-    description: token `created` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: created_at
     type: timestamp without time zone
     pii: safe
-    description: token `created` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: last_approved_at
     type: timestamp without time zone
     pii: safe
-    description: 'extension prior: column declared in G2PRegister mixin (audit/workflow
-      metadata)'
+    description: null
     mixin: G2PRegister
   - name: last_approved_by
     type: character varying
     pii: safe
-    description: 'extension prior: column declared in G2PRegister mixin (audit/workflow
-      metadata)'
+    description: null
     mixin: G2PRegister
   - name: record_status
     type: character varying
     pii: safe
-    description: token `status` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: record_status_reason
     type: character varying
     pii: safe
-    description: token `status` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: land_access
     type: boolean
     pii: safe
-    description: low cardinality (1) — likely an enum
+    description: null
     mixin: G2PIndividualLand
   - name: land_size
     type: numeric
     pii: safe
-    description: low cardinality (1) — likely an enum
+    description: null
     mixin: G2PIndividualLand
   parent_register: v_g2p_register_individuals_safe
 - name: v_g2p_register_individual_livelihoods_safe
@@ -633,39 +605,37 @@ tables:
   - name: created_by
     type: character varying
     pii: safe
-    description: token `created` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: created_at
     type: timestamp without time zone
     pii: safe
-    description: token `created` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: last_approved_at
     type: timestamp without time zone
     pii: safe
-    description: 'extension prior: column declared in G2PRegister mixin (audit/workflow
-      metadata)'
+    description: null
     mixin: G2PRegister
   - name: last_approved_by
     type: character varying
     pii: safe
-    description: 'extension prior: column declared in G2PRegister mixin (audit/workflow
-      metadata)'
+    description: null
     mixin: G2PRegister
   - name: record_status
     type: character varying
     pii: safe
-    description: token `status` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: record_status_reason
     type: character varying
     pii: safe
-    description: token `status` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: primary_livelihood
     type: character varying
     pii: safe
-    description: token `livelihood` is a known safe keyword
+    description: null
     enum:
     - AGRICULTURE
     - LIVESTOCK
@@ -683,7 +653,7 @@ tables:
   - name: secondary_livelihood
     type: character varying
     pii: safe
-    description: token `livelihood` is a known safe keyword
+    description: null
     enum:
     - AGRICULTURE
     - LIVESTOCK
@@ -701,7 +671,7 @@ tables:
   - name: employment_status
     type: character varying
     pii: quasi
-    description: token `employment` is a quasi-identifier
+    description: null
     enum:
     - EMPLOYED
     - SELF_EMPLOYED
@@ -713,7 +683,7 @@ tables:
   - name: coping_strategies_index
     type: integer
     pii: safe
-    description: low cardinality (3) — likely an enum
+    description: null
     mixin: G2PIndividualLivelihood
   parent_register: v_g2p_register_individuals_safe
 - name: v_g2p_register_individual_livestock_safe
@@ -726,39 +696,37 @@ tables:
   - name: created_by
     type: character varying
     pii: safe
-    description: token `created` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: created_at
     type: timestamp without time zone
     pii: safe
-    description: token `created` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: last_approved_at
     type: timestamp without time zone
     pii: safe
-    description: 'extension prior: column declared in G2PRegister mixin (audit/workflow
-      metadata)'
+    description: null
     mixin: G2PRegister
   - name: last_approved_by
     type: character varying
     pii: safe
-    description: 'extension prior: column declared in G2PRegister mixin (audit/workflow
-      metadata)'
+    description: null
     mixin: G2PRegister
   - name: record_status
     type: character varying
     pii: safe
-    description: token `status` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: record_status_reason
     type: character varying
     pii: safe
-    description: token `status` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: livestock_species
     type: character varying
     pii: safe
-    description: token `livestock` is a known safe keyword
+    description: null
     enum:
     - CATTLE
     - GOATS
@@ -771,7 +739,7 @@ tables:
   - name: livestock_counts
     type: character varying
     pii: safe
-    description: token `livestock` is a known safe keyword
+    description: null
     enum:
     - NONE
     - BAND_1_5
@@ -791,44 +759,42 @@ tables:
   - name: created_by
     type: character varying
     pii: safe
-    description: token `created` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: created_at
     type: timestamp without time zone
     pii: safe
-    description: token `created` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: last_approved_at
     type: timestamp without time zone
     pii: safe
-    description: 'extension prior: column declared in G2PRegister mixin (audit/workflow
-      metadata)'
+    description: null
     mixin: G2PRegister
   - name: last_approved_by
     type: character varying
     pii: safe
-    description: 'extension prior: column declared in G2PRegister mixin (audit/workflow
-      metadata)'
+    description: null
     mixin: G2PRegister
   - name: record_status
     type: character varying
     pii: safe
-    description: token `status` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: record_status_reason
     type: character varying
     pii: safe
-    description: token `status` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: program_start_date
     type: date
     pii: safe
-    description: date — temporal scalar, analytical
+    description: null
     mixin: G2PIndividualProgram
   - name: program_exit_date
     type: date
     pii: safe
-    description: date — temporal scalar, analytical
+    description: null
     mixin: G2PIndividualProgram
   parent_register: v_g2p_register_individuals_safe
 - name: v_g2p_register_individual_shocks_safe
@@ -841,41 +807,37 @@ tables:
   - name: created_by
     type: character varying
     pii: safe
-    description: token `created` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: created_at
     type: timestamp without time zone
     pii: safe
-    description: token `created` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: last_approved_at
     type: timestamp without time zone
     pii: safe
-    description: 'extension prior: column declared in G2PRegister mixin (audit/workflow
-      metadata)'
+    description: null
     mixin: G2PRegister
   - name: last_approved_by
     type: character varying
     pii: safe
-    description: 'extension prior: column declared in G2PRegister mixin (audit/workflow
-      metadata)'
+    description: null
     mixin: G2PRegister
   - name: record_status
     type: character varying
     pii: safe
-    description: token `status` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: record_status_reason
     type: character varying
     pii: safe
-    description: token `status` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: shock_type
     type: character varying
     pii: safe
-    description: 'extension enum: ShockTypeEnum = [''DROUGHT'', ''FLOOD'', ''CONFLICT'',
-      ''ILLNESS'', ''DEATH_OF_EARNER'', ''JOB_LOSS'', ''PRICE_SHOCK'', ''CROP_FAILURE'',
-      ''LIVESTOCK_LOSS'', ''FIRE'', ''OTHER'']'
+    description: null
     enum:
     - DROUGHT
     - FLOOD
@@ -892,17 +854,17 @@ tables:
   - name: shock_date
     type: date
     pii: safe
-    description: date — temporal scalar, analytical
+    description: null
     mixin: G2PIndividualShock
   - name: shock_period
     type: character varying
     pii: safe
-    description: low cardinality (4) — likely an enum
+    description: null
     mixin: G2PIndividualShock
   - name: coping_strategy
     type: character varying
     pii: safe
-    description: low cardinality (6) — likely an enum
+    description: null
     mixin: G2PIndividualShock
   parent_register: v_g2p_register_individuals_safe
 - name: v_g2p_register_individual_vulnerability_safe
@@ -915,39 +877,37 @@ tables:
   - name: created_by
     type: character varying
     pii: safe
-    description: token `created` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: created_at
     type: timestamp without time zone
     pii: safe
-    description: token `created` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: last_approved_at
     type: timestamp without time zone
     pii: safe
-    description: 'extension prior: column declared in G2PRegister mixin (audit/workflow
-      metadata)'
+    description: null
     mixin: G2PRegister
   - name: last_approved_by
     type: character varying
     pii: safe
-    description: 'extension prior: column declared in G2PRegister mixin (audit/workflow
-      metadata)'
+    description: null
     mixin: G2PRegister
   - name: record_status
     type: character varying
     pii: safe
-    description: token `status` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: record_status_reason
     type: character varying
     pii: safe
-    description: token `status` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: disability_status
     type: character varying
     pii: quasi
-    description: token `disability` is a quasi-identifier
+    description: null
     enum:
     - 'YES'
     - 'NO'
@@ -956,17 +916,17 @@ tables:
   - name: orphanhood_flag
     type: boolean
     pii: quasi
-    description: token `orphanhood` is a quasi-identifier
+    description: null
     mixin: G2PIndividualVulnerability
   - name: chronic_illness_flag
     type: boolean
     pii: quasi
-    description: token `chronic` is a quasi-identifier
+    description: null
     mixin: G2PIndividualVulnerability
   - name: displacement_status
     type: character varying
     pii: quasi
-    description: token `displacement` is a quasi-identifier
+    description: null
     enum:
     - HOST_COMMUNITY
     - IDP
@@ -976,8 +936,7 @@ tables:
   - name: pastoralist_classification
     type: character varying
     pii: safe
-    description: 'extension enum: PastoralistClassificationEnum = [''PASTORALIST'',
-      ''SEMI_PASTORALIST'', ''SETTLED'']'
+    description: null
     enum:
     - PASTORALIST
     - SEMI_PASTORALIST
@@ -986,17 +945,17 @@ tables:
   - name: high_mobility_indicator
     type: boolean
     pii: safe
-    description: low cardinality (2) — likely an enum
+    description: null
     mixin: G2PIndividualVulnerability
   - name: plw_status
     type: boolean
     pii: quasi
-    description: token `plw` is a quasi-identifier
+    description: null
     mixin: G2PIndividualVulnerability
   - name: plw_status_date
     type: date
     pii: quasi
-    description: token `plw` is a quasi-identifier
+    description: null
     mixin: G2PIndividualVulnerability
   parent_register: v_g2p_register_individuals_safe
 - name: v_g2p_register_individuals_safe
@@ -1008,87 +967,82 @@ tables:
   - name: created_by
     type: character varying
     pii: safe
-    description: token `created` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: created_at
     type: timestamp without time zone
     pii: safe
-    description: token `created` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: last_approved_at
     type: timestamp without time zone
     pii: safe
-    description: 'extension prior: column declared in G2PRegister mixin (audit/workflow
-      metadata)'
+    description: null
     mixin: G2PRegister
   - name: last_approved_by
     type: character varying
     pii: safe
-    description: 'extension prior: column declared in G2PRegister mixin (audit/workflow
-      metadata)'
+    description: null
     mixin: G2PRegister
   - name: record_status
     type: character varying
     pii: safe
-    description: token `status` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: record_status_reason
     type: character varying
     pii: safe
-    description: token `status` is a known safe keyword
+    description: null
     mixin: G2PRegister
   - name: gender
     type: character varying
     pii: quasi
-    description: token `gender` is a quasi-identifier
+    description: null
     mixin: G2PPerson
   - name: marital_status
     type: character varying
     pii: quasi
-    description: token `marital` is a quasi-identifier
+    description: null
     mixin: G2PPerson
   - name: occupation
     type: character varying
     pii: quasi
-    description: token `occupation` is a quasi-identifier
+    description: null
     mixin: G2PPerson
   - name: income_level
     type: character varying
     pii: safe
-    description: token `income` is a known safe keyword
+    description: null
     mixin: G2PPerson
   - name: language_code
     type: character varying
     pii: quasi
-    description: token `language` is a quasi-identifier
+    description: null
     mixin: G2PPerson
   - name: education_level
     type: character varying
     pii: safe
-    description: token `level` is a known safe keyword
+    description: null
     mixin: G2PPerson
   - name: altitude
     type: character varying
     pii: quasi
-    description: 'extension prior: column declared in G2PGeo mixin (geographic — re-id
-      risk)'
+    description: null
     mixin: G2PGeo
   - name: country_code
     type: character varying
     pii: quasi
-    description: 'extension prior: column declared in G2PGeo mixin (geographic — re-id
-      risk)'
+    description: null
     mixin: G2PGeo
   - name: geo_lowest_level_value_id
     type: character varying
     pii: safe
-    description: token `level` is a known safe keyword
+    description: null
     mixin: G2PGeo
   - name: identity_evidence_type
     type: character varying
     pii: safe
-    description: 'extension enum: IdentityEvidenceTypeEnum = [''FOUNDATIONAL_ID_VERIFIED'',
-      ''DOCUMENT'', ''NONE'', ''EXCEPTION'']'
+    description: null
     enum:
     - FOUNDATIONAL_ID_VERIFIED
     - DOCUMENT
@@ -1098,12 +1052,12 @@ tables:
   - name: estimated_age
     type: integer
     pii: quasi
-    description: token `age` is a quasi-identifier
+    description: null
     mixin: G2PIndividual
   - name: age_method
     type: character varying
     pii: quasi
-    description: token `age` is a quasi-identifier
+    description: null
     enum:
     - DOCUMENTED
     - ESTIMATED
@@ -1111,8 +1065,7 @@ tables:
   - name: citizenship_category
     type: character varying
     pii: safe
-    description: 'extension enum: CitizenshipCategoryEnum = [''CITIZEN'', ''REFUGEE'',
-      ''IDP'', ''RETURNEE'', ''RESIDENT'']'
+    description: null
     enum:
     - CITIZEN
     - REFUGEE
@@ -1123,8 +1076,7 @@ tables:
   - name: relationship_to_head
     type: character varying
     pii: safe
-    description: 'extension enum: RelationshipToHeadEnum = [''SELF'', ''SPOUSE'',
-      ''CHILD'', ''PARENT'', ''SIBLING'', ''OTHER_RELATIVE'', ''NON_RELATIVE'']'
+    description: null
     enum:
     - SELF
     - SPOUSE
@@ -1137,7 +1089,7 @@ tables:
   - name: residency_status
     type: character varying
     pii: safe
-    description: token `status` is a known safe keyword
+    description: null
     enum:
     - USUAL_MEMBER
     - TEMPORARY
@@ -1146,13 +1098,12 @@ tables:
   - name: dependency_indicator
     type: boolean
     pii: safe
-    description: low cardinality (2) — likely an enum
+    description: null
     mixin: G2PIndividual
   - name: preferred_contact_method
     type: character varying
     pii: safe
-    description: 'extension enum: PreferredContactMethodEnum = [''CALL'', ''SMS'',
-      ''VIA_LOCAL_OFFICE'', ''NONE'']'
+    description: null
     enum:
     - CALL
     - SMS
@@ -1162,7 +1113,7 @@ tables:
   - name: disability_status
     type: character varying
     pii: quasi
-    description: token `disability` is a quasi-identifier
+    description: null
     enum:
     - 'YES'
     - 'NO'
@@ -1171,27 +1122,27 @@ tables:
   - name: plw_status
     type: boolean
     pii: quasi
-    description: token `plw` is a quasi-identifier
+    description: null
     mixin: G2PIndividual
   - name: plw_status_date
     type: date
     pii: quasi
-    description: token `plw` is a quasi-identifier
+    description: null
     mixin: G2PIndividual
   - name: orphanhood_flag
     type: boolean
     pii: quasi
-    description: token `orphanhood` is a quasi-identifier
+    description: null
     mixin: G2PIndividual
   - name: chronic_illness_flag
     type: boolean
     pii: quasi
-    description: token `chronic` is a quasi-identifier
+    description: null
     mixin: G2PIndividual
   - name: displacement_status
     type: character varying
     pii: quasi
-    description: token `displacement` is a quasi-identifier
+    description: null
     enum:
     - HOST_COMMUNITY
     - IDP
@@ -1201,8 +1152,7 @@ tables:
   - name: pastoralist_classification
     type: character varying
     pii: safe
-    description: 'extension enum: PastoralistClassificationEnum = [''PASTORALIST'',
-      ''SEMI_PASTORALIST'', ''SETTLED'']'
+    description: null
     enum:
     - PASTORALIST
     - SEMI_PASTORALIST
@@ -1211,22 +1161,22 @@ tables:
   - name: high_mobility_indicator
     type: boolean
     pii: safe
-    description: low cardinality (2) — likely an enum
+    description: null
     mixin: G2PIndividual
   - name: primary_livelihood
     type: character varying
     pii: safe
-    description: token `livelihood` is a known safe keyword
+    description: null
     mixin: G2PIndividual
   - name: secondary_livelihood
     type: character varying
     pii: safe
-    description: token `livelihood` is a known safe keyword
+    description: null
     mixin: G2PIndividual
   - name: employment_status
     type: character varying
     pii: quasi
-    description: token `employment` is a quasi-identifier
+    description: null
     enum:
     - EMPLOYED
     - SELF_EMPLOYED
@@ -1238,7 +1188,7 @@ tables:
   - name: coping_strategies_index
     type: integer
     pii: safe
-    description: low cardinality (5) — likely an enum
+    description: null
     mixin: G2PIndividual
 pii_columns_in_source:
 - table: g2p_register_household_assets

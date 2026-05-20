@@ -18,6 +18,49 @@ import pandas as pd
 from openg2p_fastapi_common.context import dbengine
 from sqlalchemy import text
 
+from ..services.schema_service import SchemaService
+
+
+class InvalidAnalyticsTarget(ValueError):
+    """Raised when an entity / column requested by an analysis isn't in the
+    catalog allow-list. Surfaces as a clean `status: error` from the
+    analytics service rather than a raw Postgres UndefinedColumnError 500."""
+
+
+def _validate_target(entity: str, columns: List[str], filters: list[dict]) -> None:
+    """Check the entity and every referenced column against the catalog.
+
+    Two jobs:
+      1. Friendly errors — "column 'pmt_score' is not in
+         v_g2p_register_individuals_safe; available: …" instead of a 500.
+      2. SQL-injection defence — `extract` interpolates entity + column names
+         straight into the SELECT (they can't be bind params). Restricting
+         them to the catalog's allow-listed names is what makes that safe.
+    """
+    schema = SchemaService.get_component()
+    catalog = schema.catalog
+
+    allowed_tables = set(catalog.safe_table_names())
+    if entity not in allowed_tables:
+        raise InvalidAnalyticsTarget(
+            f"Entity '{entity}' is not an allow-listed view. "
+            f"Available: {sorted(allowed_tables)}"
+        )
+
+    table = next((t for t in catalog.tables if t.name == entity), None)
+    if table is None:
+        raise InvalidAnalyticsTarget(f"Entity '{entity}' not found in catalog.")
+    valid_cols = {c.name for c in table.safe_columns()}
+
+    referenced = list(columns or [])
+    referenced += [f["col"] for f in (filters or []) if "col" in f]
+    bad = [c for c in referenced if c not in valid_cols]
+    if bad:
+        raise InvalidAnalyticsTarget(
+            f"Column(s) {bad} not in {entity}. "
+            f"Available columns: {sorted(valid_cols)}"
+        )
+
 
 async def extract(
     entity: str,
@@ -25,6 +68,9 @@ async def extract(
     filters: list[dict],
     sample_size: int | None = None,
 ) -> pd.DataFrame:
+    # Allow-list check BEFORE building SQL — friendly errors + injection guard.
+    _validate_target(entity, columns, filters)
+
     cols_sql = ", ".join(columns) if columns else "*"
     where = ""
     params: dict = {}
