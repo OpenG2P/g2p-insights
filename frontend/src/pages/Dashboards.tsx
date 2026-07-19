@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   Alert,
@@ -9,10 +9,10 @@ import {
   Input,
   List,
   Row,
+  Select,
   Space,
   Spin,
   Tag,
-  Tooltip,
   Typography,
   Table,
 } from "antd";
@@ -37,7 +37,7 @@ import SqlPanel from "../components/SqlPanel";
 import SupersetEmbed from "../components/SupersetEmbed";
 import { palette } from "../theme";
 
-const { Title, Text, Paragraph } = Typography;
+const { Title, Text } = Typography;
 const { TextArea } = Input;
 
 const SUPERSET_URL = import.meta.env.VITE_SUPERSET_URL;
@@ -59,17 +59,26 @@ export default function Dashboards() {
 // ==================== List view ============================================
 
 function DashboardList() {
-  const navigate = useNavigate();
   const [authoring, setAuthoring] = useState(false);
   const [dashboards, setDashboards] = useState<DashboardListing[] | null>(null);
   const [listErr, setListErr] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
+  // The embedded_uuid currently shown. Auto-set to the first embed-ready
+  // dashboard once the list loads, so the user lands directly on a rendered
+  // dashboard instead of a card they have to click.
+  const [selectedUuid, setSelectedUuid] = useState<string | null>(null);
 
   const refresh = async () => {
     try {
       const d = await listDashboards();
       setDashboards(d.dashboards);
       setListErr(d.error || null);
+      const embedReady = d.dashboards.filter((x) => x.embedded_uuid);
+      setSelectedUuid((prev) =>
+        prev && embedReady.some((x) => x.embedded_uuid === prev)
+          ? prev
+          : embedReady[0]?.embedded_uuid ?? null,
+      );
     } catch (e) {
       setListErr(String(e));
       setDashboards([]);
@@ -80,17 +89,23 @@ function DashboardList() {
     void refresh();
   }, []);
 
-  const enableThenOpen = async (d: DashboardListing) => {
+  // Enable embedding on a not-yet-embeddable dashboard, then show it directly.
+  const enableThenShow = async (d: DashboardListing) => {
     setBusyId(d.id);
     try {
       const { embedded_uuid } = await enableEmbedding(d.id);
-      navigate(`/dashboards/${embedded_uuid}`);
+      await refresh();
+      setSelectedUuid(embedded_uuid);
     } catch (e) {
       setListErr(String(e));
     } finally {
       setBusyId(null);
     }
   };
+
+  const embedReady = (dashboards || []).filter((d) => d.embedded_uuid);
+  const notEnabled = (dashboards || []).filter((d) => !d.embedded_uuid);
+  const selected = embedReady.find((d) => d.embedded_uuid === selectedUuid) || null;
 
   return (
     <div>
@@ -116,9 +131,16 @@ function DashboardList() {
         />
       )}
 
-      {dashboards === null ? (
+      {authoring ? (
+        <NlChartAuthor
+          onClose={() => {
+            setAuthoring(false);
+            void refresh();
+          }}
+        />
+      ) : dashboards === null ? (
         <Spin />
-      ) : dashboards.length === 0 && !authoring ? (
+      ) : embedReady.length === 0 && notEnabled.length === 0 ? (
         <Card>
           <Empty
             description={
@@ -132,76 +154,85 @@ function DashboardList() {
             }
           />
         </Card>
-      ) : !authoring ? (
-        <List
-          grid={{ gutter: 16, xs: 1, sm: 2, md: 2, lg: 3, xl: 3, xxl: 4 }}
-          dataSource={dashboards}
-          renderItem={(d) => (
-            <List.Item>
-              <Card
-                hoverable
-                title={d.title}
-                style={{ borderLeft: `4px solid ${d.embedded_uuid ? palette.yellow : palette.grey}` }}
-                actions={
-                  d.embedded_uuid ? [
-                    <Button
-                      key="open"
-                      type="link"
-                      onClick={() => navigate(`/dashboards/${d.embedded_uuid}`)}
+      ) : (
+        <>
+          {/* Controls row: dashboard picker (only if >1 embed-ready) + edit link */}
+          {embedReady.length > 0 && (
+            <Space style={{ marginBottom: 12 }} wrap>
+              {embedReady.length > 1 && (
+                <Select
+                  value={selectedUuid || undefined}
+                  style={{ minWidth: 280 }}
+                  onChange={setSelectedUuid}
+                  options={embedReady.map((d) => ({
+                    value: d.embedded_uuid as string,
+                    label: d.title,
+                  }))}
+                />
+              )}
+              {selected && (
+                <>
+                  <Text strong>{selected.title}</Text>
+                  {SUPERSET_URL && (
+                    <a
+                      href={`${SUPERSET_URL}/superset/dashboard/${selected.id}/`}
+                      target="_blank"
+                      rel="noreferrer"
                     >
-                      Open here →
-                    </Button>,
-                  ] : [
-                    <Tooltip key="enable" title="Enable embedding in Superset so this dashboard can render inside Insight.">
+                      <Button type="link" icon={<ExportOutlined />}>
+                        Edit in Superset
+                      </Button>
+                    </a>
+                  )}
+                </>
+              )}
+            </Space>
+          )}
+
+          {/* The embedded dashboard, rendered directly. */}
+          {selected && (
+            <Card bodyStyle={{ padding: 0 }}>
+              <SupersetEmbed
+                key={selected.embedded_uuid}
+                embeddedUuid={selected.embedded_uuid as string}
+              />
+            </Card>
+          )}
+
+          {/* Dashboards that still need embedding enabled in Superset. */}
+          {notEnabled.length > 0 && (
+            <Card
+              size="small"
+              title="Not yet embeddable"
+              style={{ marginTop: 16 }}
+            >
+              <List
+                size="small"
+                dataSource={notEnabled}
+                renderItem={(d) => (
+                  <List.Item
+                    actions={[
                       <Button
+                        key="enable"
                         type="link"
                         icon={<ThunderboltOutlined />}
                         loading={busyId === d.id}
-                        onClick={() => enableThenOpen(d)}
+                        onClick={() => enableThenShow(d)}
                       >
                         Enable embedding
-                      </Button>
-                    </Tooltip>,
-                  ]
-                }
-              >
-                <Space direction="vertical" size={4}>
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    Superset id: {d.id} · {d.changed_on || "—"}
-                  </Text>
-                  <div>
-                    {d.embedded_uuid ? (
-                      <Tag color={palette.yellow} style={{ color: palette.black }}>
-                        Embed-ready
-                      </Tag>
-                    ) : (
+                      </Button>,
+                    ]}
+                  >
+                    <Space size={8}>
+                      <Text>{d.title}</Text>
                       <Tag>Embed not enabled</Tag>
-                    )}
-                  </div>
-                  {SUPERSET_URL && (
-                    <a
-                      href={`${SUPERSET_URL}/superset/dashboard/${d.id}/`}
-                      target="_blank"
-                      rel="noreferrer"
-                      style={{ fontSize: 12 }}
-                    >
-                      Edit in Superset <ExportOutlined />
-                    </a>
-                  )}
-                </Space>
-              </Card>
-            </List.Item>
+                    </Space>
+                  </List.Item>
+                )}
+              />
+            </Card>
           )}
-        />
-      ) : null}
-
-      {authoring && (
-        <NlChartAuthor
-          onClose={() => {
-            setAuthoring(false);
-            void refresh();
-          }}
-        />
+        </>
       )}
     </div>
   );
