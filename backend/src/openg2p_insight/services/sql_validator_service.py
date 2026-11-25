@@ -210,6 +210,16 @@ class SqlValidatorService(BaseService):
             if alias:
                 alias_to_base[alias] = tbl.name
 
+        # SELECT-list aliases (e.g. `SUM(total) AS women_count`) are legitimate
+        # references in ORDER BY / GROUP BY / HAVING. Without this, a perfectly
+        # valid aggregate like
+        #   SELECT region_code, SUM(total) AS women_count ...
+        #   ORDER BY women_count
+        # is falsely rejected because `women_count` is not a base-table column.
+        # The alias is computed from already-allow-listed columns, so exempting
+        # it is safe.
+        declared_aliases: Set[str] = {a.alias for a in tree.find_all(exp.Alias) if a.alias}
+
         for col in tree.find_all(exp.Column):
             cname = col.name
             tname = col.table  # alias OR table name; "" if unqualified
@@ -220,7 +230,10 @@ class SqlValidatorService(BaseService):
                         f"Column '{base}.{cname}' is not allow-listed on this table"
                     )
             else:
-                # Unqualified: must exist on at least one FROM table.
+                # Unqualified: accept a SELECT-list alias, otherwise it must
+                # exist on at least one FROM table.
+                if cname in declared_aliases:
+                    continue
                 if safe_cols and not any(cname in cols for cols in safe_cols.values()):
                     raise SqlValidationError(
                         f"Column '{cname}' is not in any allow-listed table referenced "

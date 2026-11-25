@@ -1,0 +1,144 @@
+{{/*
+The Insights API.
+
+This template did not exist before: values.yaml carried a complete
+`insightBackend` block — image, probes, autoscaling, env, init container — and
+nothing rendered any of it, so installing the chart produced a frontend talking
+to an API that was never deployed.
+*/}}
+{{- if .Values.insightBackend.enabled }}
+{{- $c := .Values.insightBackend }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-{{ $c.nameOverride }}
+  labels:
+    {{- include "openg2p-insights.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+spec:
+  {{- if not $c.autoscaling.enabled }}
+  replicas: {{ $c.replicaCount }}
+  {{- end }}
+  strategy:
+    type: {{ $c.updateStrategy.type }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-{{ $c.nameOverride }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-{{ $c.nameOverride }}
+        {{- include "openg2p-insights.labels" . | nindent 8 }}
+        app.kubernetes.io/component: backend
+      annotations:
+        # Roll the pods when the catalog changes: schema.yaml and
+        # pii_recognizers.yaml are read at startup, so an edited ConfigMap has no
+        # effect until the process restarts.
+        checksum/catalog: {{ include (print $.Template.BasePath "/configmap-catalog.yaml") . | sha256sum }}
+    spec:
+      {{- if $c.serviceAccount.name }}
+      serviceAccountName: {{ $c.serviceAccount.name }}
+      {{- end }}
+      {{- if $c.podSecurityContext.enabled }}
+      securityContext:
+        fsGroup: {{ $c.podSecurityContext.fsGroup }}
+      {{- end }}
+      {{- if $c.postgresCheckerInit.enabled }}
+      initContainers:
+        - name: wait-for-db
+          image: "{{ $c.postgresCheckerInit.image.repository }}:{{ $c.postgresCheckerInit.image.tag }}"
+          imagePullPolicy: {{ $c.postgresCheckerInit.image.pullPolicy }}
+          command: {{ toYaml $c.postgresCheckerInit.command | nindent 12 }}
+          args: {{ toYaml $c.postgresCheckerInit.args | nindent 12 }}
+          env:
+            {{- include "openg2p-insights.env" (dict "component" $c "ctx" $) | nindent 12 }}
+      {{- end }}
+      containers:
+        - name: backend
+          image: "{{ $c.image.repository }}:{{ $c.image.tag }}"
+          imagePullPolicy: {{ $c.image.pullPolicy }}
+          {{- if $c.containerSecurityContext.enabled }}
+          securityContext:
+            runAsUser: {{ $c.containerSecurityContext.runAsUser }}
+            runAsNonRoot: {{ $c.containerSecurityContext.runAsNonRoot }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.global.insightContainerPort }}
+          env:
+            {{- include "openg2p-insights.env" (dict "component" $c "ctx" $) | nindent 12 }}
+          volumeMounts:
+            - name: catalog
+              mountPath: /app/catalog
+              readOnly: true
+          {{- range $probe := list "startupProbe" "livenessProbe" "readinessProbe" }}
+          {{- with index $c $probe }}
+          {{- if .enabled }}
+          {{ $probe }}:
+            httpGet:
+              path: {{ .httpGet.path }}
+              port: {{ .httpGet.port }}
+            initialDelaySeconds: {{ .initialDelaySeconds }}
+            periodSeconds: {{ .periodSeconds }}
+            timeoutSeconds: {{ .timeoutSeconds }}
+            failureThreshold: {{ .failureThreshold }}
+            successThreshold: {{ .successThreshold }}
+          {{- end }}
+          {{- end }}
+          {{- end }}
+          {{- with $c.resources }}
+          resources: {{ toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: catalog
+          configMap:
+            name: {{ .Release.Name }}-insight-catalog
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-{{ $c.nameOverride }}
+  labels: {{ include "openg2p-insights.labels" . | nindent 4 }}
+spec:
+  type: {{ $c.service.type }}
+  ports:
+    - name: http
+      port: {{ $c.service.port }}
+      targetPort: http
+  selector:
+    app: {{ .Release.Name }}-{{ $c.nameOverride }}
+{{- if $c.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ .Release.Name }}-{{ $c.nameOverride }}
+  labels: {{ include "openg2p-insights.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ .Release.Name }}-{{ $c.nameOverride }}
+  minReplicas: {{ $c.autoscaling.minReplicas }}
+  maxReplicas: {{ $c.autoscaling.maxReplicas }}
+  metrics:
+    {{- with $c.autoscaling.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ . }}
+    {{- end }}
+    {{- with $c.autoscaling.targetMemoryUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ . }}
+    {{- end }}
+{{- end }}
+---
+{{ include "openg2p-insights.virtualservice" (dict "component" $c "ctx" $) }}
+{{- end }}

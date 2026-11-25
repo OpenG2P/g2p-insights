@@ -44,6 +44,12 @@ from ..services.llm_service import (
     PlanResult,
     SqlPlan,
 )
+
+AI_DISABLED_DETAIL = (
+    "AI features are disabled for this deployment. Natural-language querying is "
+    "unavailable; Dashboards, Expert Lab, Catalog and Audit remain available. "
+    "An administrator can re-enable it with INSIGHT__LLM__ENABLED=true."
+)
 from ..services.pii_service import PiiService, SanitizedQuery
 from ..services.query_executor_service import QueryExecutorService
 from ..services.schema_service import SchemaService
@@ -66,8 +72,15 @@ class ChatController(BaseController):
         self._exec = QueryExecutorService.get_component()
         self._audit = AuditService.get_component()
 
+        def _require_ai() -> None:
+            """Fail fast when AI is switched off, before any session is created
+            or any question is processed."""
+            if not self._llm.enabled:
+                raise HTTPException(status_code=503, detail=AI_DISABLED_DETAIL)
+
         @self.router.post("/ask", response_model=AskResponse)
         async def ask(req: AskRequest) -> AskResponse:
+            _require_ai()
             session_id = req.session_id or uuid.uuid4().hex
             session = await self._load_or_create_session(
                 session_id,
@@ -96,6 +109,7 @@ class ChatController(BaseController):
 
         @self.router.post("/ask/clarify", response_model=AskResponse)
         async def clarify(req: ClarifyRequest) -> AskResponse:
+            _require_ai()
             if not req.option_id and not req.text:
                 raise HTTPException(status_code=400, detail="Either option_id or text is required")
 
@@ -127,6 +141,10 @@ class ChatController(BaseController):
             to the user for approval. Reuses `session.last_intent` exactly —
             does NOT re-call the LLM, so the result is deterministic given the
             same DB state."""
+            # Guarded too: although this path never calls the LLM, the whole
+            # natural-language surface is off when AI is disabled, so keeping
+            # it consistent avoids a half-working Ask feature.
+            _require_ai()
             session = await self._load_session(req.session_id)
             if session is None:
                 raise HTTPException(status_code=404, detail="Session not found")

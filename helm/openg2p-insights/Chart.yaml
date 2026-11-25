@@ -1,0 +1,47 @@
+apiVersion: v2
+name: openg2p-insights
+description: OpenG2P Insights — analytics surface for OpenG2P registries (dashboards, maps, ad-hoc querying)
+type: application
+# The central pipeline (openg2p/packaging@v1) overrides this at package time —
+# one immutable version per commit, chart and images in lockstep.
+version: 0.0.0-develop
+dependencies:
+  - name: common
+    repository: https://openg2p.github.io/openg2p-helm
+    version: 2.30.0
+  - name: postgres-init
+    version: 1.2.0
+    repository: https://openg2p.github.io/openg2p-helm
+    condition: postgres-init.enabled
+# Deliberately NOT dependencies:
+#
+#   superset       Insights assumes a Superset already exists in the environment
+#                  and that users sign in to it through the same Keycloak as
+#                  everything else. It used to be bundled here, which meant
+#                  installing Insights stood up a second dashboard engine beside
+#                  the environment's own — two metadata databases, two versions
+#                  to keep aligned, and dashboards imported by a registry landing
+#                  in whichever one happened to be configured. Point at the
+#                  existing instance with global.supersetUrl.
+#
+#   keycloak-init  Insights does not authenticate its own users yet, so it needs
+#                  no client and no roles. Declaring them before the app enforces
+#                  anything would create a client nothing checks. Superset's own
+#                  Keycloak login is untouched — that is Superset's client.
+#
+#   master-data    Assumed to exist with a country pack already loaded. Geography
+#                  belongs to the one Master Data Service per environment; a
+#                  chart that seeded its own would compete with it.
+icon: https://openg2p.github.io/openg2p-helm/openg2p-logo.png
+keywords:
+  - openg2p
+  - insights
+  - analytics
+  - dashboards
+  - maps
+maintainers:
+  - email: info@openg2p.org
+    name: OpenG2P
+annotations:
+  catalog.cattle.io/display-name: "OpenG2P Insights"
+  openg2p.org/add-to-rancher: ""

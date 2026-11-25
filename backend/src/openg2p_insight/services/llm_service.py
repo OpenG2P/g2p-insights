@@ -1,16 +1,14 @@
 """
-Claude / OpenAI-compatible orchestrator with tool-use + clarification support.
+LLM orchestrator with tool-use + clarification support.
 
-Two provider paths share the same Pydantic result types (`SqlPlan` /
-`Clarification` / `DirectAnswer` / `ExpertRedirect`):
+Insight talks to a single provider — **OpenRouter** — via its OpenAI-compatible
+chat-completions API. One key, one endpoint, and any model OpenRouter offers
+(`anthropic/claude-sonnet-4.5`, `openai/gpt-4o`, `qwen/...`, `meta-llama/...`).
+No per-vendor SDKs or keys.
 
-  * `anthropic`         — native Claude SDK
-  * `openai_compatible` — any provider with an OpenAI-compatible
-                          chat-completions API: OpenRouter, Groq, Together,
-                          self-hosted vLLM, etc.
-
-Switching providers is a config change (`INSIGHT_LLM__PROVIDER`,
-`INSIGHT_LLM__BASE_URL`, `INSIGHT_LLM__MODEL`, `INSIGHT_LLM__API_KEY`).
+Configure with `INSIGHT_LLM__MODEL` and `INSIGHT_LLM__API_KEY` (or the
+`OPENROUTER_API_KEY` environment variable). `INSIGHT_LLM__ENABLED=false`
+switches AI off entirely.
 """
 
 from __future__ import annotations
@@ -35,6 +33,36 @@ from .schema_service import TableSpec
 
 _config = Settings.get_config(strict=False)
 _logger = logging.getLogger(_config.logging_default_logger_name)
+
+
+
+def _log_llm_usage(response, table_count: int) -> None:
+    """Record what each question cost in tokens.
+
+    Without this the only cost signal is the OpenRouter bill at the end of the
+    month, by which point there is nothing to attribute it to. Cost here is
+    dominated by the PROMPT, not the answer — the schema blob is sent on every
+    turn and grows with the catalog — so the input/output split is the number
+    that tells you whether to trim the catalog, tighten retrieval or change
+    model. Logged rather than metered because the useful unit is one question.
+
+    Never raises: an accounting miss must not fail a user's query.
+    """
+    try:
+        u = getattr(response, "usage", None)
+        if not u:
+            return
+        prompt = getattr(u, "prompt_tokens", None)
+        completion = getattr(u, "completion_tokens", None)
+        cached = getattr(u, "prompt_tokens_details", None)
+        cached = getattr(cached, "cached_tokens", None) if cached else None
+        _logger.info(
+            "llm usage model=%s prompt_tokens=%s completion_tokens=%s "
+            "cached_tokens=%s tables_in_prompt=%s",
+            _config.llm.model, prompt, completion, cached, table_count,
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _log_llm_input(provider: str, tables, history, messages) -> None:
@@ -121,6 +149,12 @@ class DirectAnswer(BaseModel):
 PlanResult = Union[SqlPlan, Clarification, ExpertRedirect, DirectAnswer]
 
 
+class LlmDisabledError(RuntimeError):
+    """Raised when an AI code path is reached while the LLM is switched off
+    via `INSIGHT_LLM__ENABLED=false`. Controllers translate this into a 503
+    so the caller gets an explicit, actionable answer rather than a stub."""
+
+
 class ConvMessage(BaseModel):
     role: Literal["user", "assistant"] = "user"
     content: str
@@ -148,14 +182,6 @@ _OPENAI_TOOLS = [
     _anthropic_to_openai_tool(DIRECT_ANSWER_TOOL_SCHEMA),
 ]
 
-_ANTHROPIC_TOOLS = [
-    PROPOSE_SQL_TOOL_SCHEMA,
-    CLARIFY_TOOL_SCHEMA,
-    EXPERT_REDIRECT_TOOL_SCHEMA,
-    DIRECT_ANSWER_TOOL_SCHEMA,
-]
-
-
 # -----------------------------------------------------------------------------
 # Service
 # -----------------------------------------------------------------------------
@@ -163,43 +189,30 @@ class LlmService(BaseService):
     def __init__(self, name: str = ""):
         super().__init__(name)
         self._client = None
-        self._provider = _config.llm.provider
+        self._enabled = bool(_config.llm.enabled)
         self._init_client()
 
+    @property
+    def enabled(self) -> bool:
+        """False when the AI features are switched off for this deployment
+        (`INSIGHT_LLM__ENABLED=false`). No outbound LLM call is ever made."""
+        return self._enabled
+
     def _init_client(self) -> None:
-        if self._provider == "openai_compatible":
-            self._init_openai_client()
-        else:
-            self._init_anthropic_client()
-
-    def _init_anthropic_client(self) -> None:
-        try:
-            from anthropic import AsyncAnthropic
-            api_key = _config.llm.api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-            if not api_key:
-                _logger.warning(
-                    "ANTHROPIC_API_KEY not set; LLM calls will fall back to a deterministic stub"
-                )
-                return
-            self._client = AsyncAnthropic(api_key=api_key)
-        except Exception as exc:  # noqa: BLE001
-            _logger.warning("Anthropic client init failed: %s", exc)
-
-    def _init_openai_client(self) -> None:
+        if not self._enabled:
+            _logger.info(
+                "LLM disabled by configuration (INSIGHT_LLM__ENABLED=false); "
+                "no client constructed and no outbound AI calls will be made."
+            )
+            return
         try:
             from openai import AsyncOpenAI
-            api_key = _config.llm.api_key or os.environ.get("OPENAI_API_KEY", "")
+            api_key = _config.llm.api_key or os.environ.get("OPENROUTER_API_KEY", "")
             base_url = _config.llm.base_url
             if not api_key:
                 _logger.warning(
-                    "LLM provider is openai_compatible but INSIGHT_LLM__API_KEY is not set; "
-                    "falling back to deterministic stub"
-                )
-                return
-            if not base_url:
-                _logger.warning(
-                    "openai_compatible provider requires INSIGHT_LLM__BASE_URL (e.g. "
-                    "https://openrouter.ai/api/v1); falling back to stub"
+                    "OpenRouter API key not set (INSIGHT_LLM__API_KEY / "
+                    "OPENROUTER_API_KEY); LLM calls fall back to a deterministic stub"
                 )
                 return
             self._client = AsyncOpenAI(
@@ -207,9 +220,9 @@ class LlmService(BaseService):
                 base_url=base_url,
                 default_headers=_config.llm.extra_headers or None,
             )
-            _logger.info("LLM client: openai_compatible @ %s model=%s", base_url, _config.llm.model)
+            _logger.info("LLM client: OpenRouter @ %s model=%s", base_url, _config.llm.model)
         except Exception as exc:  # noqa: BLE001
-            _logger.warning("OpenAI-compatible client init failed: %s", exc)
+            _logger.warning("OpenRouter client init failed: %s", exc)
 
     # ---------------------- public API ---------------------------------------
 
@@ -219,48 +232,17 @@ class LlmService(BaseService):
         tables: List[TableSpec],
         history: Optional[List[ConvMessage]] = None,
     ) -> PlanResult:
+        if not self._enabled:
+            # Hard stop — never reach a provider when AI is switched off.
+            raise LlmDisabledError(
+                "AI features are disabled for this deployment "
+                "(INSIGHT_LLM__ENABLED=false)."
+            )
         if self._client is None:
             return self._fallback_plan(tables)
+        return await self._plan_openai(sanitized_question, tables, history or [])
 
-        if self._provider == "openai_compatible":
-            return await self._plan_openai(sanitized_question, tables, history or [])
-        return await self._plan_anthropic(sanitized_question, tables, history or [])
-
-    # ---------------------- Anthropic path ----------------------------------
-
-    async def _plan_anthropic(
-        self,
-        sanitized_question: str,
-        tables: List[TableSpec],
-        history: List[ConvMessage],
-    ) -> PlanResult:
-        messages = self._anthropic_messages(sanitized_question, tables, history)
-        _log_llm_input("anthropic", tables, history, messages)
-        response = await self._client.messages.create(
-            model=_config.llm.model,
-            max_tokens=_config.llm.max_tokens,
-            system=NL_TO_SQL_SYSTEM,
-            tools=_ANTHROPIC_TOOLS,
-            messages=messages,
-        )
-        for block in response.content:
-            if block.type != "tool_use":
-                continue
-            if block.name == "request_clarification":
-                return Clarification.model_validate(block.input)
-            if block.name == "propose_sql":
-                return SqlPlan.model_validate(block.input)
-            if block.name == "propose_expert_redirect":
-                return ExpertRedirect.model_validate(block.input)
-            if block.name == "propose_direct_answer":
-                return DirectAnswer.model_validate(block.input)
-        return Clarification(
-            question="Could you rephrase or be more specific about which data you're after?",
-            context="model_did_not_select_tool",
-            options=[],
-        )
-
-    # ---------------------- OpenAI-compatible path --------------------------
+    # ---------------------- OpenRouter (OpenAI-compatible) path --------------
 
     async def _plan_openai(
         self,
@@ -269,7 +251,7 @@ class LlmService(BaseService):
         history: List[ConvMessage],
     ) -> PlanResult:
         messages = self._openai_messages(sanitized_question, tables, history)
-        _log_llm_input("openai_compatible", tables, history, messages)
+        _log_llm_input("openrouter", tables, history, messages)
         response = await self._client.chat.completions.create(
             model=_config.llm.model,
             max_tokens=_config.llm.max_tokens,
@@ -277,6 +259,8 @@ class LlmService(BaseService):
             tool_choice="auto",
             messages=messages,
         )
+
+        _log_llm_usage(response, len(tables))
 
         msg = response.choices[0].message
         tool_calls = getattr(msg, "tool_calls", None) or []
@@ -298,7 +282,7 @@ class LlmService(BaseService):
 
         # No tool call — surface a generic clarification rather than guess.
         _logger.warning(
-            "openai_compatible LLM did not call a tool; raw content: %r",
+            "OpenRouter LLM did not call a tool; raw content: %r",
             getattr(msg, "content", None),
         )
         return Clarification(
@@ -307,32 +291,7 @@ class LlmService(BaseService):
             options=[],
         )
 
-    # ---------------------- message builders --------------------------------
-
-    def _anthropic_messages(
-        self,
-        sanitized_question: str,
-        tables: List[TableSpec],
-        history: List[ConvMessage],
-    ) -> list[dict]:
-        schema_blob = self._schema_blob(tables)
-        user_first = (
-            f"Available tables:\n{schema_blob}\n\n"
-            f"User question (PII-sanitized):\n{self._apply_thinking_directive(sanitized_question)}"
-        )
-        msgs: list[dict] = [{"role": "user", "content": user_first}]
-        for m in history:
-            msgs.append({"role": m.role, "content": m.content})
-        msgs.append({
-            "role": "user",
-            "content": (
-                "Call exactly one tool: `propose_sql` if you can write a "
-                "safe SELECT, `propose_direct_answer` for a meta-question, "
-                "`propose_expert_redirect` for statistical analysis, "
-                "or `request_clarification`."
-            ),
-        })
-        return msgs
+    # ---------------------- message builder ---------------------------------
 
     def _openai_messages(
         self,
@@ -382,8 +341,9 @@ class LlmService(BaseService):
           * **role tag** ([REGISTER] / [PROGRAMME_REGISTER] / [TABLE]) —
             without this the LLM picks satellite tables for entity-level
             counts (e.g. counting disability records instead of individuals).
-          * **description** — explains what one row means and points
-            satellites at their parent register.
+          * **description** — both the TABLE's (what one row means, and which
+            register a satellite belongs to) and each COLUMN's, which is what
+            distinguishes geo_1 from geo_3 or one date from another.
         Registers are listed first so the model sees them before any
         satellites — gives even weak retrievers a fair chance of picking
         the right one."""
@@ -403,6 +363,13 @@ class LlmService(BaseService):
                     bits.append(f"enum={{{','.join(c.enum)}}}")
                 if c.unit:
                     bits.append(f"unit={c.unit}")
+                # The column's own description. It was carried all the way from
+                # the catalog into ColumnSpec and then dropped here, so the model
+                # saw a bare name and had to guess what it meant. That is how
+                # "farmers in each region" became a GROUP BY geo_1 — the country
+                # column — returning a single row that answered nothing.
+                if c.description:
+                    bits.append(f"-- {c.description}")
                 cols.append(" ".join(bits))
             role_tag = f"[{t.role.upper()}] " if t.role else ""
             line = f"- {role_tag}{t.name} ({'; '.join(cols)})"

@@ -12,11 +12,11 @@ import logging
 from dataclasses import dataclass, field
 from typing import List
 
-from openg2p_fastapi_common.context import dbengine
 from openg2p_fastapi_common.service import BaseService
 from sqlalchemy import text
 
 from ..config import Settings
+from .registry_db import registry_engine
 from ..utils.k_anonymity import K_COUNT_COL, apply_k_anonymity
 from .sql_validator_service import ValidatedSql
 
@@ -43,7 +43,14 @@ class QueryExecutorService(BaseService):
         if preview and "limit" not in sql.lower():
             sql = f"{sql} LIMIT 100"
 
-        engine = dbengine.get()
+        # The REGISTRY database. See services/registry_db.py for why this is a
+        # separate engine from the application's own.
+        engine = registry_engine()
+        if engine is None:
+            raise RuntimeError(
+                "No registry database is configured for Insight — there is "
+                "nothing to query. Set registryDB in the chart."
+            )
         async with engine.connect() as conn:
             result = await conn.execute(text(sql), validated.params)
             rows = [dict(r._mapping) for r in result]

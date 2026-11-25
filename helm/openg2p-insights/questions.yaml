@@ -1,0 +1,108 @@
+questions:
+  # ---- General --------------------------------------------------------------
+  - variable: global.baseDomain
+    label: "Base domain"
+    description: "Every hostname below derives from this. Namespace-scoped by default so two environments on one cluster cannot collide."
+    type: string
+    default: '{{ .Release.Namespace }}.openg2p.org'
+    group: "General"
+  - variable: global.insightHostname
+    label: "Insights hostname"
+    description: "Browser-facing hostname for the Insights app. Derived from the base domain unless overridden."
+    type: hostname
+    default: 'insights.{{ tpl .Values.global.baseDomain $ }}'
+    group: "General"
+  - variable: global.supersetUrl
+    label: "Superset URL (browser)"
+    description: "The environment's existing Superset. Insights does not deploy one. This one must resolve from the USER'S BROWSER — it is both the embed iframe origin and the guest-token audience — so it stays a public hostname."
+    type: string
+    default: 'https://{{ tpl .Values.global.supersetHostname $ }}'
+    group: "Integrations"
+  - variable: global.supersetInternalUrl
+    label: "Superset URL (in-cluster)"
+    description: "Used by the API for its REST calls — service-account login, listing dashboards, minting guest tokens. No browser is involved, so this stays inside the cluster rather than leaving through the ingress and coming back."
+    type: string
+    default: http://commons-services-superset:8088
+    group: "Integrations"
+  - variable: global.supersetServiceAccount
+    label: "Superset service account"
+    description: "Superset-LOCAL account the API authenticates as. Under AUTH_OAUTH this is the only identity that can reach Superset's REST API — a Keycloak user cannot authenticate a machine. Usually the account the registry's dashboard import created."
+    type: string
+    default: svc-importer
+    group: "Integrations"
+  - variable: global.supersetServiceAccountSecret
+    label: "Superset service account — Secret name"
+    description: "Kubernetes Secret holding that account's password. Must be the same Secret the registry chart used (analytics.dashboards.supersetAdminPasswordSecret), or Insights cannot list the dashboards it imported."
+    type: string
+    default: openg2p-insights-superset-svc
+    group: "Integrations"
+  - variable: global.masterDataServiceUrl
+    label: "Master Data Service URL"
+    description: "Assumed to exist with a country pack already loaded — Insights reads the geo hierarchy, it never seeds one. Called server-side, so this is the in-cluster Service (port 80, which is what the Service exposes, not the container's 8000)."
+    type: string
+    default: http://commons-services-master-data-api:80
+    group: "Integrations"
+  - variable: global.countryPack
+    label: "Country pack"
+    description: "Must be the SAME value as Country Pack in commons-services — a mismatch draws an empty map, with no error. Directory name of a pack in github.com/openg2p/openg2p-data, e.g. ETH or XKM."
+    type: string
+    default: ETH
+    group: "Integrations"
+
+  # ---- Registry data --------------------------------------------------------
+  - variable: global.registryName
+    label: "Registry release name"
+    description: "Helm release name of the registry installed alongside — e.g. nsr, fr. The registry's database, role, Secret and password key are all derived from it, the same way the registry's own chart derives them. Override those individually in the YAML editor only for a registry that does not follow that convention."
+    type: string
+    default: nsr
+    group: "Registry data"
+
+  - variable: insightMaps.build.content.configMap
+    label: "Maps content (ConfigMap)"
+    description: "ConfigMap holding the registry's own map queries and page, published by the registry chart as <registry-release>-maps-content (e.g. fr-maps-content). Leave empty to build the reference content baked into the image, which reads nsr_rpt_* and therefore only suits a social registry."
+    type: string
+    default: ""
+    group: "Registry data"
+
+  - variable: insightMaps.build.image.repository
+    label: "Maps toolchain image"
+    description: "The Evidence toolchain that builds the maps. Registry-agnostic — the registry's own queries come from the ConfigMap above, so this rarely needs changing."
+    type: string
+    default: openg2p/openg2p-insights-evidence-builder
+    group: "Registry data"
+
+  - variable: insightMaps.build.readyView
+    label: "Readiness view"
+    description: "The build waits until this reporting view has ROWS — existence alone is not enough, because the views are created before any data exists and a build gated on existence produces an empty map that looks fine. Registry-specific and NOT derived from the release name: NSR has nsr_rpt_household, the Farmer Registry has fr_rpt_farmer."
+    type: string
+    default: nsr_rpt_household
+    group: "Registry data"
+
+  - variable: insightMaps.build.refreshViews
+    label: "Materialized views to refresh"
+    description: "Comma-separated. The registry's reporting views are materialized and only built at install, so without a refresh every scheduled rebuild re-extracts the same frozen snapshot and publishes it as current. Leave empty for a registry whose reporting views are plain views. Registry-specific, e.g. nsr_rpt_household,nsr_rpt_individual or fr_rpt_farmer,fr_rpt_land."
+    type: string
+    default: "nsr_rpt_household,nsr_rpt_individual"
+    group: "Registry data"
+
+  # ---- LLM ------------------------------------------------------------------
+  - variable: global.llmEnabled
+    label: "Enable AI features"
+    description: "PREREQUISITE — before enabling this, create the API-key Secret in this namespace, or the install will be refused: kubectl create secret generic openg2p-insights-llm -n <namespace> --from-literal=openrouter-api-key='sk-or-...'   The key is a paid third-party credential and is deliberately not a field here: a value entered in Rancher is stored in the release and in every past revision of it. With AI off, Dashboards, Maps, Expert Lab, Catalog and Audit all work as normal; only the Ask tab is hidden."
+    type: boolean
+    default: false
+    group: "LLM"
+  - variable: global.llmModel
+    label: "OpenRouter model id"
+    description: "Any model OpenRouter exposes. The default is chosen for NL-to-SQL quality against an unfamiliar schema, where a weaker model returns a query that runs and quietly answers a different question."
+    type: string
+    default: anthropic/claude-sonnet-4.5
+    group: "LLM"
+    show_if: "global.llmEnabled=true"
+  - variable: global.openrouterApiKeySecret
+    label: "OpenRouter API Key — Secret name"
+    description: "Kubernetes Secret holding the OpenRouter key (sk-or-...). Provide separately; never committed. Not needed when AI is disabled."
+    type: string
+    default: openg2p-insights-llm
+    group: "LLM"
+    show_if: "global.llmEnabled=true"

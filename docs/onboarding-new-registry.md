@@ -366,7 +366,7 @@ global:
   registryDBPort: 5432
   registryDBName: <registry_db_name>
   masterDataServiceUrl: https://masterdata.<env>.openg2p.org
-  llmModel: claude-opus-4-7         # or qwen3-32b for sovereign deployments
+  llmModel: anthropic/claude-sonnet-4.5         # or qwen3-32b for sovereign deployments
 
 insightBackend:
   envVars:

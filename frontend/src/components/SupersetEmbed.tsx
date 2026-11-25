@@ -13,6 +13,7 @@
 import { useEffect, useRef } from "react";
 import { embedDashboard } from "@superset-ui/embedded-sdk";
 import { fetchEmbedToken } from "../api/client";
+import { SUPERSET_URL } from "../runtime-config";
 
 interface Props {
   embeddedUuid: string;
@@ -22,7 +23,6 @@ interface Props {
   hideChartControls?: boolean;
 }
 
-const SUPERSET_URL = import.meta.env.VITE_SUPERSET_URL || "http://localhost:8088";
 
 export default function SupersetEmbed({
   embeddedUuid,
@@ -51,7 +51,11 @@ export default function SupersetEmbed({
             hideTitle,
             hideTab,
             hideChartControls,
-            filters: { expanded: true },
+            // Collapsed. The filter rail is wide, and inside the Insight
+            // shell the dashboard has already lost horizontal space to the nav
+            // — expanded by default it pushed the charts into a narrow column
+            // before anyone had chosen a filter.
+            filters: { expanded: false },
           },
         });
         if (cancelled) return;

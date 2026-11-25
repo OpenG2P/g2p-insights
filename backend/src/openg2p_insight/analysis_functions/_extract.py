@@ -15,7 +15,7 @@ import decimal
 from typing import List
 
 import pandas as pd
-from openg2p_fastapi_common.context import dbengine
+from ..services.registry_db import registry_engine
 from sqlalchemy import text
 
 from ..services.schema_service import SchemaService
@@ -84,7 +84,20 @@ async def extract(
     limit = f"LIMIT {int(sample_size)}" if sample_size else ""
     sql = f"SELECT {cols_sql} FROM {entity} {where} {limit}".strip()
 
-    engine = dbengine.get()
+    # The REGISTRY database. The reporting views live there; the app's own
+    # database holds sessions and the audit log and none of the registry's data.
+    #
+    # Expert Lab listed every view correctly — the catalog it reads is a file —
+    # and then every function failed with `relation "fr_rpt_farmer" does not
+    # exist`, which reads as a missing view rather than as the wrong connection.
+    # The Ask tab's executor and cost gate were moved for the same reason; see
+    # services/registry_db.py.
+    engine = registry_engine()
+    if engine is None:
+        raise RuntimeError(
+            "No registry database is configured for Insight — there is nothing "
+            "to analyse. Set registryDB in the chart."
+        )
     async with engine.connect() as conn:
         result = await conn.execute(text(sql), params)
         df = pd.DataFrame(result.mappings().all())

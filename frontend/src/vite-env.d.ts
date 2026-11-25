@@ -4,6 +4,8 @@ interface ImportMetaEnv {
   readonly VITE_API_BASE_URL?: string;
   readonly VITE_API_TARGET?: string;
   readonly VITE_SUPERSET_URL?: string;
+  /** Base URL of the embedded Evidence.dev site (Maps tab). */
+  readonly VITE_EVIDENCE_URL?: string;
 }
 
 interface ImportMeta {

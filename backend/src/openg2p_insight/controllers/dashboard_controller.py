@@ -1,21 +1,22 @@
-"""NL → Superset chart authoring — Flow B from the README."""
+"""Superset dashboard embedding.
+
+The natural-language chart-authoring routes (/dashboards/charts/preview and
+/save) were removed along with the "Add chart from natural language" button.
+Authoring a chart worth keeping needs the full Superset editor — metric
+definitions, cross-filters, time grains — and a one-shot LLM translation
+produced charts that looked plausible and then had to be rebuilt by hand. The
+SupersetService methods they used (build_form_data, create_chart,
+attach_chart_to_dashboard) are deliberately kept: they still work, and bringing
+the feature back is a controller change rather than a rewrite.
+
+Ad-hoc natural-language querying still exists — that is the Ask tab, which
+answers questions directly instead of persisting a chart.
+"""
 
 from __future__ import annotations
 
-from fastapi import HTTPException
 from openg2p_fastapi_common.controller import BaseController
 
-from ..schemas.superset import (
-    AuthorChartRequest,
-    AuthorChartResponse,
-    SaveChartRequest,
-)
-from ..services.cost_gate_service import CostGateService
-from ..services.llm_service import Clarification, DirectAnswer, ExpertRedirect, LlmService, SqlPlan
-from ..services.pii_service import PiiService
-from ..services.query_executor_service import QueryExecutorService
-from ..services.schema_service import SchemaService
-from ..services.sql_validator_service import SqlValidationError, SqlValidatorService
 from ..services.superset_service import SupersetService
 
 
@@ -24,58 +25,7 @@ class DashboardController(BaseController):
         super().__init__(**kwargs)
         self.router.tags = ["dashboards"]
 
-        self._pii = PiiService.get_component()
-        self._schema = SchemaService.get_component()
-        self._llm = LlmService.get_component()
-        self._validator = SqlValidatorService.get_component()
-        self._cost = CostGateService.get_component()
-        self._exec = QueryExecutorService.get_component()
         self._superset = SupersetService.get_component()
-
-        @self.router.post("/dashboards/charts/preview", response_model=AuthorChartResponse)
-        async def preview(req: AuthorChartRequest) -> AuthorChartResponse:
-            sanitized = self._pii.sanitize(req.question)
-            schemas = await self._schema.retrieve_relevant(sanitized.text)
-            plan = await self._llm.plan(sanitized.text, schemas)
-
-            # Chart authoring only flows through `propose_sql`; if the LLM
-            # picked any other tool we surface a 400 rather than guess.
-            if isinstance(plan, (Clarification, DirectAnswer, ExpertRedirect)):
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "The question doesn't translate to a chart query. "
-                        "Try a more concrete data question (e.g. 'pie chart of gender')."
-                    ),
-                )
-            sql_plan: SqlPlan = plan
-
-            try:
-                validated = self._validator.validate(sql_plan.sql, sanitized.placeholder_map)
-            except SqlValidationError as exc:
-                raise HTTPException(status_code=400, detail=f"Generated SQL was rejected: {exc}")
-
-            cost = await self._cost.assess(validated)
-            preview_rows = await self._exec.run(validated, preview=True)
-            form_data = self._superset.build_form_data(validated.sql, sql_plan.viz)
-            return AuthorChartResponse(
-                status="preview",
-                cost=cost,
-                form_data=form_data,
-                viz_spec=sql_plan.viz,
-                preview_rows=preview_rows.rows,
-                assumptions=sql_plan.assumptions,
-                sql=validated.sql,
-            )
-
-        @self.router.post("/dashboards/charts/save", response_model=AuthorChartResponse)
-        async def save(req: SaveChartRequest) -> AuthorChartResponse:
-            chart_id = await self._superset.create_chart(
-                name=req.name, form_data=req.form_data, dataset=req.dataset
-            )
-            if req.dashboard_id:
-                await self._superset.attach_chart_to_dashboard(chart_id, req.dashboard_id)
-            return AuthorChartResponse(status="saved", chart_id=chart_id)
 
         # -------- Embed-in-place endpoints ----------------------------------
 

@@ -1,5 +1,8 @@
 """
-Test the LLM service's tool-dispatch contract with a mocked Anthropic client.
+Test the LLM service's tool-dispatch contract with a mocked OpenRouter client.
+
+Insight talks to OpenRouter via the OpenAI-compatible chat-completions API, so
+the stub mimics that response shape (`choices[0].message.tool_calls`).
 
 The point is to lock in the routing:
   * `request_clarification` → returns `Clarification`.
@@ -10,6 +13,7 @@ The point is to lock in the routing:
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -22,22 +26,24 @@ from openg2p_insight.services.llm_service import (
 from openg2p_insight.services.schema_service import ColumnSpec, TableSpec
 
 
-class _Block:
-    def __init__(self, type_: str, name: str | None = None, input_: dict | None = None):
-        self.type = type_
-        self.name = name
-        self.input = input_ or {}
+def _tool_call(name: str, args: dict) -> SimpleNamespace:
+    # Mirrors openai's response: tc.function.name / tc.function.arguments (JSON string)
+    return SimpleNamespace(function=SimpleNamespace(name=name, arguments=json.dumps(args)))
 
 
 class _StubClient:
-    """Async Anthropic-shaped stub."""
+    """Async OpenAI-shaped stub: client.chat.completions.create(...)."""
 
-    def __init__(self, response_blocks: list[_Block]):
-        self.response_blocks = response_blocks
-        self.messages = SimpleNamespace(create=self._create)
+    def __init__(self, tool_calls: list[SimpleNamespace], content: str | None = None):
+        message = SimpleNamespace(tool_calls=tool_calls, content=content)
+        choice = SimpleNamespace(message=message)
+        self._response = SimpleNamespace(choices=[choice])
+        self.chat = SimpleNamespace(
+            completions=SimpleNamespace(create=self._create)
+        )
 
     async def _create(self, **_):
-        return SimpleNamespace(content=self.response_blocks)
+        return self._response
 
 
 def _table() -> TableSpec:
@@ -56,7 +62,7 @@ def _table() -> TableSpec:
 def _svc_with_client(client) -> LlmService:
     svc = LlmService.__new__(LlmService)
     svc._client = client
-    svc._provider = "anthropic"
+    svc._enabled = True
     return svc
 
 
@@ -64,8 +70,7 @@ def _svc_with_client(client) -> LlmService:
 async def test_clarification_path():
     client = _StubClient(
         [
-            _Block(
-                "tool_use",
+            _tool_call(
                 "request_clarification",
                 {
                     "question": "By income do you mean individual or household?",
@@ -90,8 +95,7 @@ async def test_clarification_path():
 async def test_sql_plan_path():
     client = _StubClient(
         [
-            _Block(
-                "tool_use",
+            _tool_call(
                 "propose_sql",
                 {
                     "sql": (
@@ -114,7 +118,8 @@ async def test_sql_plan_path():
 
 @pytest.mark.asyncio
 async def test_no_tool_call_falls_back_to_clarification():
-    client = _StubClient([_Block("text")])
+    # No tool_calls at all — the model just returned prose.
+    client = _StubClient([], content="I'm not sure what you mean.")
     svc = _svc_with_client(client)
     result = await svc.plan("Something vague", [_table()], history=[])
     assert isinstance(result, Clarification)

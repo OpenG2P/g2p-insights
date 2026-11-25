@@ -37,7 +37,7 @@ g2p-insight/
 
    …and remove `frontend-deployment.yaml` from this chart.
 
-3. The `ANTHROPIC_API_KEY` secret is **not** committed. Provide it
+3. The OpenRouter API-key secret is **not** committed. Provide it
    out-of-band per deployment:
 
    ```

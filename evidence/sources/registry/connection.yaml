@@ -1,0 +1,21 @@
+# The registry this environment serves. Evidence runs these queries at BUILD
+# time and bakes the results into static parquet — the browser never talks to
+# Postgres, so the database needs no public exposure.
+#
+# Named `registry`, not after any one product: the queries in this directory are
+# replaced by whichever registry is installed, but the CONNECTION is always
+# "the registry's database". Naming it `nsr` meant the environment variables
+# were `EVIDENCE_SOURCE__nsr__*`, so a Farmer Registry deployment had to set
+# variables named after a social registry.
+#
+# Connection details come from the environment at build time, never from this
+# file, so no credential is committed:
+#   EVIDENCE_SOURCE__registry__host / __port / __database / __user / __password
+name: registry
+type: postgres
+options:
+  host: localhost
+  port: 5432
+  database: registry
+  user: postgres
+  ssl: false

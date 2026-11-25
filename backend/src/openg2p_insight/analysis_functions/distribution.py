@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 from scipy import stats
 
 from ..schemas.analytics import AnalyticsRequest
@@ -27,7 +28,22 @@ async def distribution(req: AnalyticsRequest) -> dict:
     if df.empty:
         return {"result": {}, "viz_spec": {}, "assumptions": ["No rows matched filters"]}
 
-    values = df[req.column].dropna().to_numpy(dtype=float)
+    # A histogram, percentiles and a lognormal fit are all numeric ideas. Asked
+    # for a category the conversion raises, and the user sees "could not convert
+    # string to float: 'FEMALE'" — a pandas message about their data, for what is
+    # really a mismatch between the column and the function. The column picker
+    # offers every column in the view, so this is a click away, not an edge case.
+    series = df[req.column].dropna()
+    numeric = pd.to_numeric(series, errors="coerce")
+    if len(series) and numeric.isna().all():
+        return {"result": {}, "viz_spec": {}, "assumptions": [
+            f"error: `{req.column}` is not numeric, and a distribution needs "
+            f"numbers to bin. For a categorical column use crosstab, or "
+            f"group_compare to compare a numeric metric across its values."]}
+    values = numeric.dropna().to_numpy(dtype=float)
+    if values.size == 0:
+        return {"result": {}, "viz_spec": {}, "assumptions": [
+            f"No numeric values in `{req.column}`"]}
     counts, edges = np.histogram(values, bins=bins)
     percentiles = {f"p{p}": float(np.percentile(values, p)) for p in (10, 25, 50, 75, 90)}
 

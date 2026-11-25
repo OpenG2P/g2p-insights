@@ -1,0 +1,82 @@
+{{- /*
+Fail the install up front when AI is enabled but the OpenRouter key is missing.
+
+WHY A HOOK JOB AND NOT A TEMPLATE CHECK
+A `lookup` in a template cannot do this. It returns nothing when there is no
+cluster to ask — `helm template`, and client-side `helm install --dry-run` —
+and there is no reliable in-template signal that distinguishes "no cluster" from
+"cluster says the Secret is absent". Failing on an empty lookup would make the
+chart impossible to render offline, which CI does on every build; not failing
+means the check never fires at all.
+
+A hook Job sidesteps the question: it only ever runs against a real cluster.
+`helm template` renders it and moves on; `helm install` runs it and refuses to
+proceed if it exits non-zero.
+
+The Secret is mounted OPTIONAL so a missing one leaves the variable unset rather
+than wedging the pod in CreateContainerConfigError — which would fail the
+install with a message about container configuration instead of about the key.
+*/ -}}
+{{- if .Values.global.llmEnabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-validate-llm-key
+  labels: {{ include "openg2p-insights.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    # Before anything is created, so a rejected install leaves nothing behind.
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  # One shot. Retrying cannot make an absent Secret appear, and each retry just
+  # delays the error the operator is waiting to see.
+  backoffLimit: 0
+  template:
+    metadata:
+      labels: {{ include "openg2p-insights.labels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: validate
+          image: {{ .Values.global.validateImage | default "busybox:1.36" }}
+          env:
+            - name: OPENROUTER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.global.openrouterApiKeySecret | quote }}
+                  key: {{ .Values.global.openrouterApiKeyKey | quote }}
+                  optional: true
+          command: ["sh", "-c"]
+          args:
+            - |
+              if [ -n "${OPENROUTER_API_KEY:-}" ]; then
+                echo "[validate] OpenRouter API key found in Secret '{{ .Values.global.openrouterApiKeySecret }}'."
+                exit 0
+              fi
+              cat >&2 <<'MSG'
+              [validate] AI features are enabled but no OpenRouter API key was found.
+
+              Expected key '{{ .Values.global.openrouterApiKeyKey }}' in Secret
+              '{{ .Values.global.openrouterApiKeySecret }}' (namespace {{ .Release.Namespace }}).
+
+              This is a paid third-party credential belonging to your
+              organisation, so this chart cannot generate one — and installing
+              without it gives an app that looks configured and fails the first
+              time someone opens the Ask tab. Create it:
+
+                kubectl create secret generic {{ .Values.global.openrouterApiKeySecret }} \
+                  -n {{ .Release.Namespace }} \
+                  --from-literal={{ .Values.global.openrouterApiKeyKey }}='sk-or-...'
+
+              Or install without AI features:
+
+                --set global.llmEnabled=false
+
+              Dashboards, Maps, Expert Lab, Catalog and Audit all work with AI off.
+              MSG
+              exit 1
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { memory: 64Mi }
+{{- end }}

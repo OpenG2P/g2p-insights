@@ -1,0 +1,121 @@
+{{- $c := .Values.insightMaps }}
+{{- if and $c.enabled $c.build.enabled }}
+{{/*
+Refresh the maps from the live registry.
+
+Evidence extracts its SQL to parquet at BUILD time and queries that parquet in
+the browser — there is no runtime database connection. So new registry data does
+not reach the maps until something rebuilds the site, and the published image is
+deliberately data-free: it must not carry any deployment's registry data.
+
+That leaves the rebuild to the cluster. A Job runs once after install and a
+CronJob keeps it current; both write into a volume the serving pod mounts, so a
+refresh needs neither a restart nor a new image.
+
+WAITING FOR THE REGISTRY
+------------------------
+The interesting part is not the build, it is knowing when to run it. Insights and
+the registry are separate Helm releases, so no hook ordering can span them — and
+"the registry release finished" would be the wrong signal anyway, since its seed
+Jobs are post-install hooks that run after that, and the reporting views later
+still.
+
+So this waits on what it actually needs: the reporting views existing AND holding
+rows. That is true only once the registry has been installed, seeded and had its
+views applied — whatever order those happened in, and whichever release did them.
+Same shape as the registry's own require-mds-geo gate.
+*/}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-maps-site
+  labels: {{ include "openg2p-insights.labels" . | nindent 4 }}
+  annotations:
+    # The built site outlives the release: losing it blanks the maps until the
+    # next scheduled build.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    # Shared: the build Job writes while the serving pods read.
+    - {{ $c.build.persistence.accessMode }}
+  resources:
+    requests:
+      storage: {{ $c.build.persistence.size }}
+  {{- with $c.build.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-maps-build
+  labels: {{ include "openg2p-insights.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    # After the app is up. Helm WAITS for hooks, so this one never fails and
+    # never blocks: if the registry is not seeded it skips and the CronJob
+    # builds later. Installing Insights before the registry is a supported
+    # order.
+    helm.sh/hook-weight: "20"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: {{ $c.build.backoffLimit }}
+  template:
+    metadata:
+      labels: {{ include "openg2p-insights.labels" . | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      initContainers: {{ include "openg2p-insights.mapsBuildWait" . | nindent 8 }}
+      containers: {{ include "openg2p-insights.mapsBuildStep" . | nindent 8 }}
+      volumes:
+        - name: site
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-maps-site
+        - name: gate
+          emptyDir: {}
+        {{- with $c.build.content.configMap }}
+        - name: content
+          configMap:
+            name: {{ tpl . $ | quote }}
+        {{- end }}
+{{- if $c.build.schedule }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .Release.Name }}-maps-build
+  labels: {{ include "openg2p-insights.labels" . | nindent 4 }}
+spec:
+  schedule: {{ $c.build.schedule | quote }}
+  {{- with $c.build.timeZone }}
+  timeZone: {{ . | quote }}
+  {{- end }}
+  # A build is minutes long; overlapping runs would race on the same volume.
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  # A missed window is not worth catching up on — the next tick has fresher data.
+  startingDeadlineSeconds: 300
+  jobTemplate:
+    spec:
+      backoffLimit: {{ $c.build.backoffLimit }}
+      template:
+        metadata:
+          labels: {{ include "openg2p-insights.labels" . | nindent 12 }}
+        spec:
+          restartPolicy: OnFailure
+          initContainers: {{ include "openg2p-insights.mapsBuildWait" . | nindent 10 }}
+          containers: {{ include "openg2p-insights.mapsBuildStep" . | nindent 10 }}
+          volumes:
+            - name: site
+              persistentVolumeClaim:
+                claimName: {{ .Release.Name }}-maps-site
+            - name: gate
+              emptyDir: {}
+            {{- with $c.build.content.configMap }}
+            - name: content
+              configMap:
+                name: {{ tpl . $ | quote }}
+            {{- end }}
+{{- end }}
+{{- end }}

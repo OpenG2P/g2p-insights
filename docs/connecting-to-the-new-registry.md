@@ -320,7 +320,7 @@ global:
   masterDataServiceUrl: https://masterdata.<env>.openg2p.org
 
   # LLM
-  llmModel: claude-opus-4-7                  # or qwen3-32b for sovereign deploys
+  llmModel: anthropic/claude-sonnet-4.5                  # or qwen3-32b for sovereign deploys
   anthropicApiKeySecret: g2p-insight-llm
   anthropicApiKeyKey: anthropic-api-key
 

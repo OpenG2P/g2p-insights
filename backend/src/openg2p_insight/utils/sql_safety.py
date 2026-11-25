@@ -28,6 +28,14 @@ class StaticIssue:
     blocker: bool = False
 
 
+# Aggregated output: one row per group rather than one row per record. LIMIT
+# counts too — it bounds the result just as effectively.
+_AGGREGATED = re.compile(
+    r"\bGROUP\s+BY\b|\bLIMIT\b|"
+    r"\b(?:COUNT|SUM|AVG|MIN|MAX|STDDEV|VARIANCE|PERCENTILE_CONT|PERCENTILE_DISC)\s*\("
+)
+
+
 def static_analyze(sql: str) -> List[StaticIssue]:
     issues: List[StaticIssue] = []
     parsed = sqlparse.parse(sql)
@@ -58,7 +66,19 @@ def static_analyze(sql: str) -> List[StaticIssue]:
         issues.append(StaticIssue(f"Too many JOINs ({join_count}) — limit is {_MAX_JOINS}", blocker=True))
 
     # Soft warnings (non-blocking)
-    if "WHERE" not in upper:
-        issues.append(StaticIssue("Query has no WHERE clause — may scan whole table"))
+    #
+    # A missing WHERE only matters when the query returns RAW ROWS: that is the
+    # case where the whole table comes back. An aggregate or a GROUP BY returns
+    # one row per group however much it reads, and its result size is already
+    # bounded by the cost gate's row estimate.
+    #
+    # Without this distinction the warning fired on "how many farmers are there
+    # in total" — a question whose entire point is to cover the register, and
+    # which cannot be written any other way. A caveat attached to the correct
+    # answer to a simple question just makes the tool look unsure of itself.
+    if "WHERE" not in upper and not _AGGREGATED.search(upper):
+        issues.append(StaticIssue(
+            "Query has no WHERE clause and returns raw rows — may return the "
+            "whole table"))
 
     return issues

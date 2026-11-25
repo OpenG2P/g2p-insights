@@ -157,3 +157,31 @@ def test_case_when_ratio_passes():
         "FROM mv_individuals_summary"
     )
     assert "CASE" in v.sql.upper()
+
+
+def test_select_alias_in_order_by_is_accepted():
+    """Regression: a SELECT-list alias referenced in ORDER BY must not be
+    mistaken for an unknown table column. This exact query was falsely
+    rejected in the smoke test:
+        SELECT region_code, SUM(total) AS women_count ...
+        ORDER BY women_count
+    The alias is computed from allow-listed columns, so it is safe."""
+    svc = _svc(["mv_district_aggregates"], [_aggregates_table()])
+    v = svc.validate(
+        "SELECT region_code, SUM(total) AS women_count "
+        "FROM mv_district_aggregates "
+        "GROUP BY region_code ORDER BY women_count DESC"
+    )
+    assert "women_count" in v.sql
+
+
+def test_unknown_column_still_rejected_even_with_aliases_present():
+    """The alias exemption must NOT open a hole: a genuinely unknown column
+    is still rejected."""
+    svc = _svc(["mv_district_aggregates"], [_aggregates_table()])
+    with pytest.raises(SqlValidationError, match="not in any allow-listed"):
+        svc.validate(
+            "SELECT region_code, SUM(total) AS ok_alias "
+            "FROM mv_district_aggregates "
+            "WHERE made_up_column = 1 GROUP BY region_code"
+        )

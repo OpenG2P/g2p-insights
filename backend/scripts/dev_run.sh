@@ -64,7 +64,9 @@ export COMMON_DB_DATASOURCE="${COMMON_DB_DATASOURCE:-postgresql+asyncpg://${DB_U
 # CATALOG_PATH — that's only used inside the docker image where the default
 # `/app/catalog` happens to be the right baked-in path).
 export INSIGHT_CATALOG_PATH="${INSIGHT_CATALOG_PATH:-$(pwd)/../test-stack/postgres/catalog}"
-export CONFIG_PATH="${CONFIG_PATH:-$(pwd)/config/default.yaml}"
+# No CONFIG_PATH: settings come from INSIGHT_* environment variables only.
+# A config/default.yaml used to sit here and was read by nothing, so it
+# quietly advertised a provider and model the app never used.
 
 # External services (point at dockerised ports on localhost)
 export INSIGHT_SUPERSET__URL="${INSIGHT_SUPERSET__URL:-http://localhost:8088}"

@@ -7,12 +7,14 @@ See the top-level [README](../README.md) for architecture and design.
 ## Local development
 
 ```bash
-# 1. Install
-pip install -e .[test]
-python -m spacy download en_core_web_lg
+# 1. Install. The AI/PII pipeline (spaCy, Presidio, sentence-transformers,
+#    statsmodels) is an OPTIONAL extra — omit it and the app runs with graceful
+#    fallbacks (regex PII, keyword schema retrieval).
+pip install -e .[test]                       # base + test deps
+pip install -e .[ai] && python -m spacy download en_core_web_lg   # full pipeline (heavier)
 
 # 2. Bring up Postgres + the service
-export ANTHROPIC_API_KEY=...        # optional in early dev; falls back to deterministic stub
+export OPENROUTER_API_KEY=sk-or-...   # optional in early dev; falls back to deterministic stub
 docker compose up --build
 
 # 3. Apply migrations

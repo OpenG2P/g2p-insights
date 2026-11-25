@@ -1,0 +1,636 @@
+global:
+  # Every hostname below derives from this, so an environment sets one value.
+  # Namespace-scoped by default, matching the commons-services convention, so
+  # two environments on one cluster cannot collide.
+  baseDomain: '{{ .Release.Namespace }}.openg2p.org'
+
+  insightHostname: 'insights.{{ tpl .Values.global.baseDomain $ }}'
+  # Port the API container listens on (uvicorn inside the image).
+  insightContainerPort: 8000
+
+  # ------- insight DB (owns the insight schema) -------------------------------
+  postgresqlHost: commons-postgresql
+  insightDB: '{{ printf "%s" .Release.Name | replace "-" "_" }}'
+  insightDBPort: 5432
+  insightDBUser: '{{ printf "%s_user" .Release.Name | replace "-" "_" }}'
+  insightDBSecret: '{{ .Release.Name }}'
+  insightDBUserPasswordKey: '{{ .Release.Name }}-db-user'
+
+  # ------- registry DB (where the registry data lives; we read-only) ----------
+  # The maps read the reporting views (nsr_rpt_*), which the registry's own
+  # reporting-views hook creates INSIDE this database — there is no separate
+  # reporting database to point at.
+  # ------- Master Data DB (read-only: the maps build reads the geo hierarchy) --
+  # The maps build re-syncs its boundaries from Master Data before every extract,
+  # so the country follows whatever the environment was seeded with instead of
+  # whatever was baked into the image. Master Data is a separate database owned by
+  # a separate role, so it needs its own credentials — reading the geo tables as
+  # the registry user fails with "permission denied for table g2p_geo_levels".
+  #
+  # Defaults follow the master-data chart's own naming.
+  masterDataDBHost: commons-postgresql
+  masterDataDBPort: 5432
+  masterDataDB: master_data
+  masterDataDBUser: master_data_user
+  # 'master-data-db', NOT 'master-data': keycloak-init names its client-secret
+  # Secret after the clientId and a 'master-data' Keycloak client exists, so the
+  # bare name resolves to a Secret holding only client_secret and every consumer
+  # dies with "couldn't find key master-data-db-user". commons-services renamed
+  # it; this must match.
+  masterDataDBSecret: 'master-data-db'
+  masterDataDBUserPasswordKey: master-data-db-user
+
+  registryDBHost: commons-postgresql
+  registryDBPort: 5432
+  # The Helm RELEASE NAME of the registry installed alongside — `nsr`, `fr`, and
+  # so on. Everything below derives from it, exactly as the registry chart derives
+  # its own names from `.Release.Name`, so pointing Insights at a different
+  # registry is a one-value change.
+  #
+  # It used to be four separate values defaulting to nsr, with only the database
+  # name exposed in the install form. Naming a different registry therefore
+  # changed the database and left the user, the Secret and the key on `nsr`, and
+  # the maps build died on `secret "nsr" not found` — after a successful install,
+  # in a Job nobody was watching.
+  registryName: nsr
+  # Derived. Override individually only for a registry whose database, role or
+  # Secret does not follow the chart's own convention.
+  registryDBName: '{{ .Values.global.registryName | replace "-" "_" }}'
+  registryDBUser: '{{ printf "%s_user" .Values.global.registryName | replace "-" "_" }}'
+  registryDBSecret: '{{ .Values.global.registryName }}'
+  registryDBUserPasswordKey: '{{ .Values.global.registryName }}-db-user'
+
+  # ------- services this chart does NOT deploy --------------------------------
+  # Superset, Master Data and the registry database are installed by other
+  # charts, normally into this same namespace. Everything Insights reaches
+  # SERVER-side defaults to an in-cluster Service name — no ingress, no TLS
+  # termination, no public DNS in the path. Only the two URLs a BROWSER loads
+  # are public hostnames, and each says so where it is defined.
+  supersetHostname: 'superset.{{ tpl .Values.global.baseDomain $ }}'
+  # BROWSER-facing. The embed SDK loads the iframe from this origin and the
+  # guest token is minted for it, so it must be the URL a user's browser can
+  # reach — an in-cluster Service name would simply fail to load.
+  supersetUrl: 'https://{{ tpl .Values.global.supersetHostname $ }}'
+  # SERVER-facing, used by the backend for its REST calls: logging in as the
+  # service account, listing dashboards, minting guest tokens. None of that
+  # involves a browser, so it stays inside the cluster rather than leaving
+  # through the ingress and coming back — which also means dashboards keep
+  # working if the public hostname is down or DNS is split-horizon.
+  #
+  # Defaults to the commons-services Superset; override for another release.
+  supersetInternalUrl: 'http://commons-services-superset:8088'   # in-cluster Service
+  # Secret holding the guest-token signing key shared by Superset (which mints
+  # nothing itself) and the Insight backend (which mints guest tokens).
+  # Generate once per deployment; NEVER commit.
+  supersetGuestTokenSecret: openg2p-insights-superset
+  supersetGuestTokenKey: guest-token-jwt-secret
+  # Superset-local service account the backend authenticates as. Created by the
+  # registry chart that imports dashboards (NSR's analytics job) — its
+  # supersetAdminPasswordSecret and this Secret must be the same one, or Insights
+  # cannot list the dashboards that registry just imported.
+  supersetServiceAccount: svc-importer
+  # Generated on first install and adopted thereafter — the registry chart
+  # renders the same Secret name and key, so whichever installs first creates it
+  # and the other picks it up. Set false and create it yourself if your pipeline
+  # applies rendered manifests.
+  supersetServiceAccountSecretGenerate: true
+  supersetServiceAccountSecret: openg2p-insights-superset-svc
+  supersetServiceAccountKey: password
+
+  # Master Data Service. Assumed to exist WITH a country pack already loaded —
+  # Insights reads the geo hierarchy, it never seeds one.
+  #
+  # In-cluster: the backend calls this server-side, so it has no reason to leave
+  # the cluster. Port 80 — the Service exposes 80, not the container's 8000.
+  masterDataServiceUrl: 'http://commons-services-master-data-api:80'
+
+  # ------- Maps (Evidence) ----------------------------------------------------
+  # Browser-reachable URL of the Evidence static site behind the Maps tab.
+  # The maps site is served under /evidence on the Insight host — ONE product,
+  # URL. It used to have a hostname of its own, which meant a second DNS name and
+  # certificate, and an iframe pointing off-origin, for what a user experiences as
+  # a tab inside Insights.
+  #
+  # Relative on purpose: same origin, so the iframe needs no CORS and the browser
+  # address bar never leaves the Insight host. Evidence is BUILT with this path
+  # (deployment.basePath), so changing it here alone would not work — the assets
+  # would still be requested from /evidence.
+  evidenceUrl: '/evidence'
+  # (The registry DB the Maps queries read is the one declared above — the
+  # reporting views live in it. This block used to redeclare registryDBUser,
+  # registryDBSecret and registryDBUserPasswordKey; being later in the same map,
+  # those won, and the two empty strings reached the CronJob as an empty
+  # secretKeyRef name that Kubernetes rejects at install.)
+  # Country pack whose boundaries the Maps surface draws. MUST match what the
+  # environment's Master Data Service was seeded with (masterData.geoSeed.countryPack
+  # in commons-services) — the map joins its figures to its shapes on P-code, so a
+  # mismatch renders an empty choropleth rather than raising an error.
+  #
+  # The value is a DIRECTORY NAME under packs/ in openg2p-data
+  # (https://github.com/openg2p/openg2p-data), conventionally the ISO 3166 alpha-3
+  # code. ETH (Ethiopia) is what commons-services seeds by default; XKM is Kamuntu,
+  # the fictitious pack used for demos and tests. Any other pack in that repository
+  # can be named here — this is not a fixed list.
+  #
+  # The country is DECLARED once, in commons-services. This setting exists only
+  # because the map build fetches boundaries from MinIO directly rather than asking
+  # Master Data which country it holds.
+  countryPack: ETH
+
+  # ------- LLM ----------------------------------------------------------------
+  # Master switch for ALL AI features. With it off no outbound LLM call is ever
+  # made, no API key is required, the /ask endpoints return 503 and the UI hides
+  # the "Ask" tab. Dashboards, Maps, Expert Lab, Catalog and Audit are
+  # unaffected.
+  #
+  # OFF by default, because turning it on has a PREREQUISITE the installer
+  # cannot satisfy from the form: an OpenRouter API key, which must already
+  # exist as a Secret in this namespace. The key is a paid third-party
+  # credential, so it is deliberately not a form field — a value typed into
+  # Rancher is persisted in the release and in every past revision of it, where
+  # rotating it does not remove the old one.
+  #
+  # So: create the Secret, then set this true.
+  #
+  #   kubectl create secret generic openg2p-insights-llm -n <namespace> \
+  #     --from-literal=openrouter-api-key='sk-or-...'
+  llmEnabled: false
+  # Insight uses OpenRouter (one gateway, any model).
+  #
+  # NOT generated by this chart, unlike the Superset service-account password.
+  # That one authenticates a machine to a service in the same cluster and no
+  # human ever sees it, so generating it is safe. This is a paid third-party
+  # credential belonging to your organisation — nothing here can mint one, and
+  # inventing a placeholder would give an app that looks configured and fails on
+  # first use. Create it yourself before installing with AI enabled:
+  #
+  #   kubectl create secret generic openg2p-insights-llm -n <ns> \
+  #     --from-literal=openrouter-api-key='sk-or-...'
+  #
+  # The reference is optional, so with llmEnabled=false the Secret need not
+  # exist at all.
+  openrouterApiKeySecret: openg2p-insights-llm
+  openrouterApiKeyKey: openrouter-api-key
+  # Any model id OpenRouter exposes, e.g. openai/gpt-4o,
+  # qwen/qwen-2.5-72b-instruct, meta-llama/llama-3.3-70b-instruct.
+  llmModel: anthropic/claude-sonnet-4.5
+
+# ---------------------------------------------------------------------------
+# postgres-init: creates the insight DB + user. The registry DB already exists
+# and is NOT managed by this chart.
+# ---------------------------------------------------------------------------
+postgres-init:
+  enabled: true
+  postgresql:
+    host: '{{ tpl .Values.global.postgresqlHost $ }}'
+    port: 5432
+    existingSecret: commons-postgresql
+    existingSecretPostgresPasswordKey: postgres-password
+  databases:
+    - name: '{{ tpl .Values.global.insightDB $ }}'
+      user: '{{ tpl .Values.global.insightDBUser $ }}'
+      secret: '{{ tpl .Values.global.insightDBSecret $ }}'
+      secretUserPasswordKey: '{{ tpl .Values.global.insightDBUserPasswordKey $ }}'
+
+# ===========================================================================
+# Backend
+# ===========================================================================
+insightBackend:
+  enabled: true
+  nameOverride: insight-backend
+  hostname: '{{ tpl .Values.global.insightHostname $ }}'
+
+  # One replica by default. A trial or single-tenant install does not need two,
+  # and two is not free: each backend holds its own DB pool and Superset guest
+  # tokens, and the second pod doubles that for no traffic.
+  replicaCount: 1
+  # Off by default. NB the HPA, not replicaCount, is what decides the count when
+  # this is on — the Deployment omits `replicas` entirely so the HPA can own it —
+  # so leaving this enabled with minReplicas pinned the deployment at 2 whatever
+  # replicaCount said. Turn it on for a load-bearing environment.
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 8
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+  updateStrategy:
+    type: RollingUpdate
+  serviceAccount: { create: false, name: "" }
+
+  image:
+    repository: openg2p/openg2p-insights-api
+    tag: develop
+    pullPolicy: Always
+
+  podSecurityContext: { enabled: false, fsGroup: 1000 }
+  containerSecurityContext: { enabled: false, runAsUser: 1000, runAsNonRoot: true }
+
+  service:
+    type: ClusterIP
+    port: 80
+    externalTrafficPolicy: Cluster
+
+  istio:
+    enabled: true
+    virtualservice:
+      enabled: true
+      host: '{{ tpl .Values.insightBackend.hostname $ }}'
+      gateway: "internal"
+      destination: ""
+      destinationPort: '{{ .Values.insightBackend.service.port }}'
+      prefix: /v1/insight/
+      # The app serves its routes at the ROOT (/health, /dashboards, /ask …) —
+      # `openapi_common_api_prefix` is OpenAPI metadata, not a mount point. So the
+      # gateway has to strip /v1/insight/ before forwarding, or every call 404s.
+      # With this empty the API was unreachable from the browser entirely.
+      rewriteUri: /
+      extraPrefixes: []
+    gateway:
+      enabled: false
+      host: '{{ tpl .Values.insightBackend.hostname $ }}'
+      ingressController: { istio: ingressgateway }
+      httpTlsRedirect: false
+      httpEnabled: true
+      httpsEnabled: false
+      tls: { mode: SIMPLE, credentialName: "" }
+
+  # ------- Catalog — rendered to a separate ConfigMap, mounted at /app/catalog
+  # Creates insight.audit_log / chat_session / saved_chart before the app starts.
+  # Off only for a deployment that manages its schema out of band.
+  migrate:
+    enabled: true
+    backoffLimit: 2
+    waitImage: jbergknoff/postgresql-client:latest
+    resources:
+      requests: { cpu: 100m, memory: 128Mi }
+      limits: { memory: 512Mi }
+
+  appCatalog:
+    # schema.yaml is GENERATED, not authored here.
+    #
+    # It describes the tables the Ask tab may query. Hand-writing it produced a
+    # published default with zero tables — and since safe_views is a fail-secure
+    # allow-list, the planner then refused every question and the feature looked
+    # switched off. The tables also differ per registry and the enum values per
+    # country, so there is no static value that could be right.
+    #
+    # The generator introspects the registry's *_rpt_* reporting views and Master
+    # Data's code lists, and patches the result into this ConfigMap.
+    generate:
+      enabled: true
+      # Twice a day: reporting views change when a registry is upgraded, and a
+      # catalog describing views that no longer exist plans SQL that fails.
+      schedule: "0 3,15 * * *"
+      kAnonymity: 5
+      backoffLimit: 2
+      # How long to wait for the rewritten ConfigMap to reach the backend's
+      # mount before asking it to reload. A kubelet sync can take ~60s, and a
+      # reload issued before then just re-reads the old file and reports
+      # success — the worst kind of no-op.
+      propagationSeconds: 75
+      resources:
+        requests: { cpu: 100m, memory: 128Mi }
+        limits: { memory: 512Mi }
+    # The blocks below stay hand-authored: they are policy, not description.
+    # schemaYaml is only a seed, rendered ONLY when generate.enabled is false.
+    # The strings are mounted as /app/catalog/<name>.yaml and read at startup
+    # (or on POST /catalog/reload — they are not watched).
+    schemaYaml: |
+      deployment:
+        country_code: ""
+        default_currency: ""
+        k_anonymity: 5
+      tables: []
+      safe_views: []
+      geo_columns: []
+    piiRecognizersYaml: |
+      recognizers: []
+    vizTemplatesYaml: |
+      templates: []
+
+  # Settings come from environment ONLY — pydantic-settings with
+  # env_prefix="insight_" and "__" as the nested delimiter. So the form is
+  # INSIGHT_<SECTION>__<FIELD>, with ONE underscore after INSIGHT.
+  #
+  # Two whole classes of setting used to be silently ignored here:
+  #
+  #   * DB_HOST / DB_PORT / DB_NAME / DB_USER. The settings class overrides
+  #     env_prefix, so the DB fields it inherits are read as
+  #     INSIGHT_DB_HOSTNAME / _PORT / _DBNAME / _USERNAME — and the field names
+  #     differ too (hostname, dbname, username). Unprefixed, every one of them
+  #     was dropped and the backend fell back to localhost with an empty
+  #     database name.
+  #   * CONFIG_PATH, pointing at a ConfigMap of app config. Nothing reads
+  #     CONFIG_PATH — not this app, not openg2p_fastapi_common — so that file
+  #     configured nothing. The settings worth tuning are now env vars here.
+  #
+  # CATALOG_PATH was likewise unprefixed and ignored; it happened to work only
+  # because /app/catalog is also the code default. It is INSIGHT_CATALOG_PATH now.
+  envVars:
+    # The SAME database, under the name the openg2p-fastapi-common library
+    # reads. That library builds the async engine in its own init_db() from its
+    # own Settings, which use the `common_` prefix — it never sees INSIGHT_DB_*.
+    # Unset, its datasource defaulted to postgresql+asyncpg://localhost:5432 and
+    # EVERY call touching the app's own database failed with a connection error
+    # to localhost: the Ask tab's session store and the whole Audit tab, both
+    # returning a bare "Unknown Error" that named neither the database nor the
+    # host it was trying.
+    COMMON_DB_HOSTNAME: '{{ tpl .Values.global.postgresqlHost $ }}'
+    COMMON_DB_PORT: '{{ .Values.global.insightDBPort }}'
+    COMMON_DB_DBNAME: '{{ tpl .Values.global.insightDB $ }}'
+    COMMON_DB_USERNAME: '{{ tpl .Values.global.insightDBUser $ }}'
+
+    INSIGHT_DB_HOSTNAME: '{{ tpl .Values.global.postgresqlHost $ }}'
+    INSIGHT_DB_PORT: '{{ .Values.global.insightDBPort }}'
+    INSIGHT_DB_DBNAME: '{{ tpl .Values.global.insightDB $ }}'
+    INSIGHT_DB_USERNAME: '{{ tpl .Values.global.insightDBUser $ }}'
+    # The REGISTRY database — where the reporting views the Ask tab queries
+    # live. Distinct from INSIGHT_DB_*/COMMON_DB_* above, which address the app's
+    # OWN database (sessions, audit log) and hold no registry data.
+    #
+    # Without these the planner produced correct SQL and then priced it against
+    # the app's database, where EXPLAIN answered `relation "fr_rpt_farmer" does
+    # not exist` — from the outside indistinguishable from a catalog describing
+    # tables nobody ever created.
+    INSIGHT_REGISTRY_DB_HOSTNAME: '{{ tpl .Values.global.registryDBHost $ }}'
+    INSIGHT_REGISTRY_DB_PORT: '{{ .Values.global.registryDBPort }}'
+    INSIGHT_REGISTRY_DB_DBNAME: '{{ tpl .Values.global.registryDBName $ }}'
+    INSIGHT_REGISTRY_DB_USERNAME: '{{ tpl .Values.global.registryDBUser $ }}'
+    INSIGHT_CATALOG_PATH: /app/catalog
+    INSIGHT_SUPERSET__URL: '{{ tpl .Values.global.supersetInternalUrl $ }}'
+    INSIGHT_SUPERSET__AUTH_PROVIDER: db
+    # Superset-LOCAL service account. Under AUTH_TYPE = AUTH_OAUTH this is the
+    # only identity that can reach Superset's REST API: /api/v1/security/login
+    # checks Superset's own user table and never consults Keycloak, and
+    # POST /login/ is a browser redirect that answers 405. A Keycloak user,
+    # however privileged, cannot authenticate a service.
+    INSIGHT_SUPERSET__USERNAME: '{{ .Values.global.supersetServiceAccount }}'
+    INSIGHT_MASTERDATA__URL: '{{ tpl .Values.global.masterDataServiceUrl $ }}'
+    INSIGHT_LLM__MODEL: '{{ .Values.global.llmModel }}'
+    INSIGHT_LLM__ENABLED: '{{ .Values.global.llmEnabled }}'
+    # Browser-reachable Evidence URL. Empty hides the Maps tab.
+    INSIGHT_MAPS__EVIDENCE_URL: '{{ tpl .Values.global.evidenceUrl $ }}'
+
+  envVarsFrom:
+    COMMON_DB_PASSWORD:
+      secretKeyRef:
+        name: '{{ tpl .Values.global.insightDBSecret $ }}'
+        key: '{{ tpl .Values.global.insightDBUserPasswordKey $ }}'
+    INSIGHT_DB_PASSWORD:
+      secretKeyRef:
+        name: '{{ tpl .Values.global.insightDBSecret $ }}'
+        key: '{{ tpl .Values.global.insightDBUserPasswordKey $ }}'
+    INSIGHT_REGISTRY_DB_PASSWORD:
+      secretKeyRef:
+        name: '{{ tpl .Values.global.registryDBSecret $ }}'
+        key: '{{ tpl .Values.global.registryDBUserPasswordKey $ }}'
+    INSIGHT_SUPERSET__PASSWORD:
+      secretKeyRef:
+        name: '{{ .Values.global.supersetServiceAccountSecret }}'
+        key: '{{ .Values.global.supersetServiceAccountKey }}'
+    INSIGHT_LLM__API_KEY:
+      secretKeyRef:
+        name: '{{ .Values.global.openrouterApiKeySecret }}'
+        key: '{{ .Values.global.openrouterApiKeyKey }}'
+        # Optional so a deployment with llmEnabled=false does not have to invent
+        # a Secret for a feature it switched off. Without this the API pod sits
+        # in CreateContainerConfigError — the whole app down for want of a key
+        # nothing was going to use.
+        optional: true
+
+  # Probes hit the POD directly, bypassing the gateway rewrite above, so they
+  # must use the app's real path. Pointing them at /v1/insight/health meant
+  # the backend never passed startup and sat 0/N ready while perfectly healthy.
+  startupProbe:   { enabled: true, httpGet: { path: /health, port: http }, initialDelaySeconds: 0,  periodSeconds: 10, timeoutSeconds: 5, failureThreshold: 30, successThreshold: 1 }
+  livenessProbe:  { enabled: true, httpGet: { path: /health, port: http }, initialDelaySeconds: 20, periodSeconds: 30, timeoutSeconds: 5, failureThreshold: 6,  successThreshold: 1 }
+  readinessProbe: { enabled: true, httpGet: { path: /health, port: http }, initialDelaySeconds: 0,  periodSeconds: 10, timeoutSeconds: 5, failureThreshold: 6,  successThreshold: 1 }
+
+  postgresCheckerInit:
+    enabled: true
+    image: { repository: jbergknoff/postgresql-client, tag: latest, pullPolicy: IfNotPresent }
+    command: ['sh']
+    args:
+      - '-c'
+      # Reads the INSIGHT_DB_* vars directly: this is a shell, so the names
+      # only have to match what the container is given, and giving it a second
+      # unprefixed copy is how the two drifted apart before.
+      - 'until psql "postgresql://${INSIGHT_DB_USERNAME}:${INSIGHT_DB_PASSWORD}@${INSIGHT_DB_HOSTNAME}:${INSIGHT_DB_PORT}/${INSIGHT_DB_DBNAME}" -c "SELECT 1" > /dev/null 2>&1; do echo "Waiting for database ${INSIGHT_DB_DBNAME} to be ready..."; sleep 3; done'
+    containerSecurityContext: { enabled: false }
+
+# ===========================================================================
+# Frontend
+# ===========================================================================
+insightFrontend:
+  enabled: true
+  nameOverride: insight-frontend
+  hostname: '{{ tpl .Values.global.insightHostname $ }}'
+
+  # One replica by default — the frontend is a static bundle behind an ingress.
+  replicaCount: 1
+  serviceAccount: { create: false, name: "" }
+
+  image:
+    repository: openg2p/openg2p-insights-ui
+    tag: develop
+    pullPolicy: Always
+
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 8080
+    externalTrafficPolicy: Cluster
+
+  istio:
+    enabled: true
+    virtualservice:
+      enabled: true
+      host: '{{ tpl .Values.insightFrontend.hostname $ }}'
+      gateway: "internal"
+      destination: ""
+      destinationPort: '{{ .Values.insightFrontend.service.port }}'
+      prefix: /
+      rewriteUri: ""
+      extraPrefixes: []
+
+  envVars:
+    VITE_API_BASE_URL: 'https://{{ tpl .Values.global.insightHostname $ }}/v1/insight'
+    VITE_SUPERSET_URL: '{{ tpl .Values.global.supersetUrl $ }}'
+    # The Maps tab is an iframe, so this is read by the BROWSER, not the API.
+    # Setting only the backend's INSIGHT_MAPS__EVIDENCE_URL leaves the tab
+    # showing "No Evidence.dev URL is set for this deployment".
+    VITE_EVIDENCE_URL: '{{ tpl .Values.global.evidenceUrl $ }}'
+
+# ===========================================================================
+# Maps — the Evidence static site
+# ---------------------------------------------------------------------------
+# Evidence runs its SQL at BUILD time and bakes the results into parquet, so the
+# served site is static and the browser never talks to Postgres. That is why this
+# is a plain deployment with no database credentials: the image already contains
+# the data, and refreshing the figures means rebuilding the image.
+#
+# It ships with Insights rather than with a registry because it is the Maps tab's
+# renderer — part of the analytics surface, one per environment. A registry that
+# shipped its own would give a two-registry environment two Maps sites. The
+# registry supplies the data (its reporting views) and MDS the geography.
+# ===========================================================================
+insightMaps:
+  enabled: true
+  nameOverride: insight-maps
+  # Same host as the rest of Insights; the path is what separates them.
+  hostname: '{{ tpl .Values.global.insightHostname $ }}'
+
+  # One for now. The site is on a ReadWriteMany volume, so this can be raised
+  # without further changes.
+  replicaCount: 1
+  serviceAccount: { create: false, name: "" }
+
+  image:
+    repository: openg2p/openg2p-insights-evidence
+    tag: develop
+    pullPolicy: Always
+
+  podSecurityContext: { enabled: false, fsGroup: 1000 }
+  containerSecurityContext: { enabled: false, runAsUser: 1000, runAsNonRoot: true }
+
+  # Rebuild the maps in-cluster against the live registry.
+  #
+  # Evidence runs its SQL at BUILD time and queries the resulting parquet in the
+  # browser, so figures only change when the site is rebuilt. The published image
+  # is data-free on purpose — it must not carry any deployment's registry data —
+  # which is why the rebuild happens here rather than in CI.
+  build:
+    enabled: true
+    # Runs once after install, and again on this schedule. Empty disables the
+    # CronJob and leaves only the post-install build.
+    # Twice daily by default: the registry changes through the day, and a build
+    # is minutes of CPU, not seconds.
+    schedule: "0 2,14 * * *"
+    timeZone: ""
+    backoffLimit: 2
+    image:
+      # THE REGISTRY'S maps image, not the platform's.
+      #
+      # What a map draws belongs to a registry: these queries read that
+      # registry's reporting views and plot its measures. So each registry
+      # publishes an image built FROM openg2p-insights-evidence-builder with its
+      # own queries and page — the same split as the db-seed images. Point this
+      # at the registry installed alongside:
+      #
+      #   NSR     openg2p/openg2p-nsr-maps
+      #   Farmer  openg2p/openg2p-farmer-registry-maps
+      #
+      # The default is the platform's own builder, which carries the REFERENCE
+      # content — it builds and renders, but its queries are the reference
+      # registry's, so a real deployment overrides this.
+      repository: openg2p/openg2p-insights-evidence-builder
+      tag: develop
+      pullPolicy: Always
+    # Wait until this view has rows before building. Existence is not enough: the
+    # reporting views are created by their own hook before any data exists, so a
+    # build gated on existence alone produces an empty map that looks fine.
+    # The registry's own map content — its queries and its page — mounted from a
+    # ConfigMap the registry chart publishes (<registry-release>-maps-content).
+    #
+    # What a map draws belongs to a registry, but it is ~30 KB of SQL and
+    # Markdown, so it travels as configuration rather than as an image. It used
+    # to be an image built FROM the builder below, which made a registry pin an
+    # Insights version and fail its own pipeline when that version was wrong —
+    # the dependency pointing the wrong way round.
+    #
+    # Empty means build the REFERENCE content baked into the image, which reads
+    # nsr_rpt_* and therefore only suits a social registry.
+    content:
+      configMap: ""
+    # Re-read the boundaries from Master Data before every build.
+    #
+    # Off would mean drawing whatever country the image was built with, which is
+    # only ever right by coincidence — the pack is chosen at install time and the
+    # image cannot know it. Turn off only for an air-gapped build whose image was
+    # deliberately baked with the correct pack.
+    syncBoundariesFromMasterData: true
+    # Credentials for the bucket Master Data uploaded the boundaries to. Defaults
+    # match the master-data chart's own objectStore block. Clear existingSecret
+    # where the bucket allows anonymous reads.
+    objectStore:
+      existingSecret: commons-minio
+      accessKeyKey: root-user
+      secretKeyKey: root-password
+    # NB this is NOT derived from global.registryName: each registry names its
+    # own views, and they do not share a suffix — NSR has nsr_rpt_household, the
+    # Farmer Registry has fr_rpt_farmer. Set it to match the registry whose
+    # content is mounted above.
+    readyView: nsr_rpt_household
+    # Materialized views to refresh before extracting. EMPTY BY DEFAULT.
+    #
+    # Insight used to refresh the registry's reporting views here, because
+    # nothing else did. That made the freshness of a registry's own data depend
+    # on an analytics release: a deployment without Insight never refreshed at
+    # all, and one with it refreshed only as a side effect of building maps.
+    # The registry charts now own their refresh — creation and refresh in the
+    # same place — under analytics.reportingViews.refreshSchedule.
+    #
+    # Kept here, empty, for one case: an Insight installed against an OLDER
+    # registry release that has no refresh CronJob of its own. Name that
+    # registry's views and this build refreshes them as it used to.
+    #
+    # Refresh failures are logged and ignored: a stale map beats no map.
+    # Accepts a list, or a comma-separated string so it can be set from the
+    # install form. Like readyView, these are registry-specific names.
+    refreshViews: []
+    waitImage: jbergknoff/postgresql-client:latest
+    # Short: missing the window is not an error, just a build deferred to the
+    # CronJob. Long enough to cover a registry seeding in parallel.
+    waitAttempts: 20
+    waitSeconds: 15
+    source:
+      host: '{{ tpl .Values.global.registryDBHost $ }}'
+      port: '{{ .Values.global.registryDBPort }}'
+      database: '{{ tpl .Values.global.registryDBName $ }}'
+      user: '{{ tpl .Values.global.registryDBUser $ }}'
+      passwordSecret:
+        name: '{{ tpl .Values.global.registryDBSecret $ }}'
+        key: '{{ tpl .Values.global.registryDBUserPasswordKey $ }}'
+    persistence:
+      # The build Job writes while the serving pods read, so the volume has to be
+      # shared — ReadWriteMany. On a cluster whose storage cannot do RWX, use
+      # ReadWriteOnce and keep replicaCount at 1; build and pod then have to
+      # share a node.
+      accessMode: ReadWriteMany
+      size: 2Gi
+      storageClass: ""
+    resources:
+      requests: { cpu: 500m, memory: 1Gi }
+      limits: { memory: 4Gi }
+
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 3000
+
+  istio:
+    enabled: true
+    virtualservice:
+      enabled: true
+      host: '{{ tpl .Values.insightMaps.hostname $ }}'
+      gateway: "internal"
+      destination: ""
+      destinationPort: '{{ .Values.insightMaps.service.port }}'
+      # NO rewrite. Evidence is built with basePath /evidence and its assets are
+      # absolute (/evidence/_app/..., /evidence/geo/...), so the prefix must reach the
+      # server intact. Stripping it here would serve index.html and then 404
+      # every asset it asks for.
+      # /evidence, not /maps: the shell's router already owns /maps for its Maps
+      # tab, so the two would answer the same URL differently.
+      prefix: /evidence
+      rewriteUri: ""
+      # Absolute paths Evidence emits without the basePath — see the comment in
+      # _helpers.tpl. Without these the browser asks the FRONTEND for parquet,
+      # gets index.html with a 200, and every chart loads for ever.
+      extraPrefixes:
+        - { path: /data/, rewriteTo: /evidence/data/ }
+        - { path: /geo/,  rewriteTo: /evidence/geo/ }
+
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits:   { cpu: 500m, memory: 256Mi }

@@ -882,7 +882,7 @@ global:
   # LLM
   anthropicApiKeySecret: g2p-insight-llm
   anthropicApiKeyKey: anthropic-api-key
-  llmModel: claude-opus-4-7                 # current Claude model id
+  llmModel: anthropic/claude-sonnet-4.5                 # current Claude model id
 
 insightBackend:
   enabled: true

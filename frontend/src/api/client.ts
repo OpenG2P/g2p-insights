@@ -1,7 +1,8 @@
 import axios from "axios";
+import { API_BASE_URL } from "../runtime-config";
 
 export const api = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || "/v1/insight",
+  baseURL: API_BASE_URL,
   headers: { "Content-Type": "application/json" },
 });
 
@@ -193,37 +194,6 @@ export async function runAnalysis(fn: string, body: unknown) {
   };
 }
 
-// ---------------- Dashboard chart authoring ----------------------------------
-
-export interface ChartPreviewResponse {
-  status: "preview" | "saved" | "error" | string;
-  chart_id?: number | null;
-  cost?: Cost | null;
-  form_data?: Record<string, unknown> | null;
-  viz_spec?: VizSpec | null;
-  preview_rows: Record<string, unknown>[];
-  assumptions: string[];
-  sql?: string | null;
-}
-
-export async function previewChart(question: string, dashboard_id?: number) {
-  const { data } = await api.post<ChartPreviewResponse>("/dashboards/charts/preview", {
-    question,
-    ...(dashboard_id !== undefined ? { dashboard_id } : {}),
-  });
-  return data;
-}
-
-export async function saveChart(payload: {
-  name: string;
-  dataset: string;
-  form_data: Record<string, unknown>;
-  dashboard_id?: number;
-}) {
-  const { data } = await api.post<ChartPreviewResponse>("/dashboards/charts/save", payload);
-  return data;
-}
-
 export async function getCatalog() {
   const { data } = await api.get("/catalog");
   return data as Record<string, unknown>;
@@ -232,4 +202,89 @@ export async function getCatalog() {
 export async function getAudit(limit = 100) {
   const { data } = await api.get("/audit", { params: { limit } });
   return data as { entries: Record<string, unknown>[] };
+}
+
+// ------------------------------------------------------------------- drill
+// Hierarchical drill-down — the one drill mechanic Superset lacks. Nothing
+// here knows a country, a level name, or a depth: all of that comes from
+// Master Data Service via the backend.
+
+export interface DrillLevel {
+  level_id: string;
+  level_mnemonic: string;
+  parent_level_id?: string | null;
+  is_leaf: boolean;
+  /** False when the catalog has no column mapping for this level. */
+  is_queryable: boolean;
+}
+
+export interface DrillPathItem {
+  level_id: string;
+  level_value_id: string;
+  label?: string | null;
+}
+
+export interface DrillRow {
+  code: string;
+  label: string;
+  value: number | null;
+  drillable: boolean;
+}
+
+export interface DrillResponse {
+  level: DrillLevel;
+  next_level?: DrillLevel | null;
+  breadcrumb: DrillPathItem[];
+  rows: DrillRow[];
+  sql: string;
+  k_suppressions: number;
+  measure_label: string;
+}
+
+export interface DrillMeasure {
+  agg?: string;
+  column?: string | null;
+  label?: string | null;
+}
+
+export async function getDrillHierarchy() {
+  const { data } = await api.get<{ levels: DrillLevel[] }>("/drill/hierarchy");
+  return data.levels;
+}
+
+export async function drill(payload: {
+  table: string;
+  measure?: DrillMeasure;
+  level_id?: string;
+  path?: DrillPathItem[];
+  limit?: number;
+}) {
+  const { data } = await api.post<DrillResponse>("/drill", payload);
+  return data;
+}
+
+// ---------------------------------------------------------------- features
+
+export interface Features {
+  /** False when this deployment has AI switched off (INSIGHT_LLM__ENABLED=false). */
+  ai_enabled: boolean;
+  /** False when no Superset URL is configured. */
+  dashboards_enabled: boolean;
+  /** False when no Evidence.dev URL is configured (Maps tab). */
+  maps_enabled: boolean;
+  version?: string;
+}
+
+/**
+ * Capability flags used by the app shell to decide which tabs to render.
+ * Fails safe: if the call errors we assume features are ON so the UI is never
+ * silently crippled by a transient backend blip.
+ */
+export async function getFeatures(): Promise<Features> {
+  try {
+    const { data } = await api.get<Features>("/features");
+    return data;
+  } catch {
+    return { ai_enabled: true, dashboards_enabled: true, maps_enabled: true };
+  }
 }

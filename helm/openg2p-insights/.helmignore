@@ -1,0 +1,14 @@
+.DS_Store
+.git/
+.gitignore
+.bzr/
+.bzrignore
+.hg/
+.hgignore
+.svn/
+*.tmproj
+.vscode/
+.idea/
+# NOT *.tgz — `helm dependency build` puts the subchart archives in charts/
+# as .tgz, and ignoring them makes Helm report the dependencies it just
+# downloaded as missing, so the chart cannot template at all.

@@ -36,8 +36,15 @@ services:
   # the backend's `superset.url` config simply points elsewhere.
   # ---------------------------------------------------------------------------
   superset:
-    image: apache/superset:4.0.2
+    build:
+      context: ./superset
+      dockerfile: Dockerfile
+    image: openg2p-superset:6.1.0-pg
     container_name: insight-test-superset
+    # Opt-in: `docker compose --profile with-superset up`. Off by default so the
+    # stack fits comfortably on a laptop — the backend reports
+    # dashboards_enabled=false and the UI hides the Dashboards tab.
+    profiles: ["with-superset"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -55,13 +62,48 @@ services:
       - superset_home:/app/superset_home
     entrypoint: ["/bin/bash", "/app/docker-init.sh"]
 
+  # Local Master Data Service simulation. Keeps the stack fully self-contained
+  # (no dependency on master-data.trial.openg2p.org) and serves the SAME geo
+  # hierarchy that seed_data.py uses, so registry rows and /geo values align.
+  mock-mds:
+    build:
+      context: ./mock-mds
+    container_name: insight-mock-mds
+    ports:
+      - "8090:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Evidence.dev — the "Maps" surface (choropleth + zoom-drill). Static build,
+  # embedded by the Insight frontend's Maps tab. Opt-in (heavy build):
+  #   docker compose --profile with-evidence up -d --build evidence   (make maps)
+  evidence:
+    profiles: ["with-evidence"]
+    build:
+      # ../evidence, not ./evidence: the Maps project moved out of test-stack to
+      # the repo root when it became a shipped image rather than a test fixture.
+      context: ../evidence
+      dockerfile: Dockerfile
+    container_name: insight-test-evidence
+    ports:
+      - "3100:3000"
+
   backend:
     build:
       context: ../backend
       dockerfile: Dockerfile
+      args:
+        # Off by default (fast, small). `make up-ai` sets this to true for the
+        # full spaCy/Presidio/embeddings/statsmodels pipeline.
+        INSTALL_AI: ${INSTALL_AI:-false}
     container_name: insight-test-backend
     depends_on:
       postgres:
+        condition: service_healthy
+      mock-mds:
         condition: service_healthy
     ports:
       - "8000:8000"
@@ -73,12 +115,13 @@ services:
       DB_PASSWORD: postgres
       CONFIG_PATH: /app/config/config.yaml
       CATALOG_PATH: /app/catalog
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      INSIGHT_LLM__MODEL: ${INSIGHT_LLM__MODEL:-claude-opus-4-7}
-      INSIGHT_SUPERSET__URL: http://superset:8088
+      INSIGHT_LLM__API_KEY: ${OPENROUTER_API_KEY:-}
+      INSIGHT_LLM__MODEL: ${INSIGHT_LLM__MODEL:-anthropic/claude-sonnet-4.5}
+      INSIGHT_SUPERSET__URL: ${SUPERSET_URL:-http://superset:8088}
       INSIGHT_SUPERSET__USERNAME: ${SUPERSET_ADMIN_USERNAME:-admin}
       INSIGHT_SUPERSET__PASSWORD: ${SUPERSET_ADMIN_PASSWORD:-admin}
-      INSIGHT_MASTERDATA__URL: ${MASTERDATA_URL:-https://master-data.trial.openg2p.org}
+      INSIGHT_MASTERDATA__URL: ${MASTERDATA_URL:-http://mock-mds:8080}
+      INSIGHT_MAPS__EVIDENCE_URL: ${EVIDENCE_URL:-http://localhost:3100}
       INSIGHT_MASTERDATA__SENDER_APP_MNEMONIC: g2p-insight
       # openg2p-fastapi-common reads its OWN Settings (env_prefix=common_) when
       # applying the router prefix and DB datasource. Set those here.
@@ -92,7 +135,11 @@ services:
       - ../backend/config:/app/config:ro
       - ./postgres/catalog:/app/catalog:ro
 
+  # The frontend is normally run with `npm run dev` (Vite on :5173) for a live
+  # dev loop with visible errors and no CORS. This container is kept only as an
+  # opt-in production-parity check:  docker compose --profile with-frontend up
   frontend:
+    profiles: ["with-frontend"]
     build:
       context: ../frontend
       dockerfile: Dockerfile

@@ -272,10 +272,10 @@ Proceed? (yes/no): yes
 [apply] wrote Helm values overlay → /tmp/values-onboard.yaml
 
 [apply] done. Save this `insight_ai` password into your K8s secret:
-  Ak83mVxQp9Lz7rNwT4hYbCf2sD6jKvEu
+  <generated-32-char-password>
 
   kubectl create secret generic g2p-insight-registry-creds \
-      --from-literal=insight-ai-password='Ak83mVxQp9Lz7rNwT4hYbCf2sD6jKvEu'
+      --from-literal=insight-ai-password='<generated-32-char-password>'
 ```
 
 The password is generated fresh each run (32 random chars). Save it

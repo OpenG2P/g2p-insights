@@ -1,0 +1,66 @@
+{{- $c := .Values.insightBackend }}
+{{- if and $c.enabled $c.migrate.enabled }}
+{{/*
+Create the app's own schema before anything tries to use it.
+
+insight.audit_log, chat_session and saved_chart are what the Audit tab reads and
+what the Ask tab stores a conversation in. The migration to create them has been
+in the repo all along and alembic has always been installed — but nothing ran it,
+so in a fresh database the schema simply was not there and both features failed
+on every request with "Unknown Error", naming neither the table nor the database.
+
+A PRE-install hook, so the schema exists before the backend starts rather than
+racing it.
+*/}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-insight-migrate
+  labels: {{ include "openg2p-insights.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "5"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: {{ $c.migrate.backoffLimit }}
+  template:
+    metadata:
+      labels: {{ include "openg2p-insights.labels" . | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        {{/* The database and role are created by the postgres-init subchart,
+             which renders as an ORDINARY Job, not a hook. Helm runs every
+             pre-install hook to completion BEFORE applying ordinary resources,
+             so a pre-install migration runs while the database does not yet
+             exist. Hence post-install.
+
+             And pg_isready is the wrong check: it asks whether the SERVER
+             accepts connections — which it always does here — and succeeds
+             without authenticating. The migration then failed on the next step
+             with "password authentication failed for user insights_user", for
+             a role nothing had created yet, which reads as a wrong password
+             rather than a missing database.
+
+             So wait on a real authenticated connection to the real database. */}}
+        - name: wait-for-db
+          image: {{ $c.migrate.waitImage }}
+          command: ["sh", "-c"]
+          args:
+            - 'until PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c "select 1" >/dev/null 2>&1; do echo "waiting for $DB_NAME at $DB_HOST to accept $DB_USER"; sleep 3; done; echo "database is up and accepts $DB_USER"'
+          env: {{ include "openg2p-insights.migrateEnv" . | nindent 12 }}
+      containers:
+        - name: migrate
+          image: "{{ $c.image.repository }}:{{ $c.image.tag }}"
+          imagePullPolicy: {{ $c.image.pullPolicy }}
+          workingDir: /app/migrations
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              echo "[migrate] applying migrations to ${DB_NAME}@${DB_HOST}"
+              alembic upgrade head
+              echo "[migrate] done"
+          env: {{ include "openg2p-insights.migrateEnv" . | nindent 12 }}
+          resources: {{- toYaml $c.migrate.resources | nindent 12 }}
+{{- end }}

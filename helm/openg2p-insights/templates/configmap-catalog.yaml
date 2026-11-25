@@ -1,0 +1,20 @@
+{{- if .Values.insightBackend.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-insight-catalog
+  labels: {{ include "openg2p-insights.labels" . | nindent 4 }}
+data:
+  {{- if not .Values.insightBackend.appCatalog.generate.enabled }}
+  {{/* Only when generation is OFF. With it on the generator owns this key, and
+       re-rendering it here would hand the AI back the seed on every upgrade —
+       silently undoing the introspection that produced the real one. Helm's
+       three-way merge preserves a key the chart does not declare. */}}
+  schema.yaml: |
+{{ tpl .Values.insightBackend.appCatalog.schemaYaml . | indent 4 }}
+  {{- end }}
+  pii_recognizers.yaml: |
+{{ tpl .Values.insightBackend.appCatalog.piiRecognizersYaml . | indent 4 }}
+  viz_templates.yaml: |
+{{ tpl .Values.insightBackend.appCatalog.vizTemplatesYaml . | indent 4 }}
+{{- end }}

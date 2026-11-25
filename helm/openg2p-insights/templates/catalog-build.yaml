@@ -1,0 +1,100 @@
+{{- $c := .Values.insightBackend }}
+{{- if and $c.enabled $c.appCatalog.generate.enabled }}
+{{/*
+Generate the AI catalog from the databases this deployment actually has.
+
+The Ask tab plans SQL from a catalog of tables, columns and enum values. Shipping
+that as a hand-written block in values.yaml did not survive contact with reality:
+the published default described ZERO tables, so `safe_table_names()` returned
+nothing and the planner refused every question — the feature looked switched off
+rather than misconfigured. It could not have worked by hand anyway, because the
+tables differ per registry and the enum values differ per COUNTRY.
+
+So a Job introspects the registry's *_rpt_* reporting views and Master Data's
+code lists, and writes the result into a ConfigMap the backend mounts. Same
+shape as the maps build, for the same reason: generated beats copied.
+
+Runs on install and upgrade, and on a schedule, because the reporting views
+change when a registry is upgraded.
+*/}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-catalog-build
+  labels: {{ include "openg2p-insights.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-catalog-build
+  labels: {{ include "openg2p-insights.labels" . | nindent 4 }}
+rules:
+  {{/* Narrow on purpose: this Job writes ONE ConfigMap and reads nothing else.
+       resourceNames keeps a compromised job from rewriting, say, the Superset
+       service-account Secret that happens to share the namespace. */}}
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "create", "update", "patch"]
+    resourceNames: ["{{ .Release.Name }}-insight-catalog"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Name }}-catalog-build
+  labels: {{ include "openg2p-insights.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Release.Name }}-catalog-build
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-catalog-build
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-catalog-build
+  labels: {{ include "openg2p-insights.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    {{/* After the app is up, and after the maps build has refreshed the
+         reporting views, so row estimates describe populated views. */}}
+    helm.sh/hook-weight: "25"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: {{ $c.appCatalog.generate.backoffLimit }}
+  template:
+    metadata:
+      labels: {{ include "openg2p-insights.labels" . | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: {{ .Release.Name }}-catalog-build
+      containers: {{ include "openg2p-insights.catalogBuildStep" . | nindent 8 }}
+{{- if $c.appCatalog.generate.schedule }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .Release.Name }}-catalog-build
+  labels: {{ include "openg2p-insights.labels" . | nindent 4 }}
+spec:
+  schedule: {{ $c.appCatalog.generate.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 300
+  jobTemplate:
+    spec:
+      backoffLimit: {{ $c.appCatalog.generate.backoffLimit }}
+      template:
+        metadata:
+          labels: {{ include "openg2p-insights.labels" . | nindent 12 }}
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: {{ .Release.Name }}-catalog-build
+          containers: {{ include "openg2p-insights.catalogBuildStep" . | nindent 10 }}
+{{- end }}
+{{- end }}

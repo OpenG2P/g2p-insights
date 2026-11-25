@@ -1,0 +1,47 @@
+{{- $name := .Values.global.supersetServiceAccountSecret -}}
+{{- $key  := .Values.global.supersetServiceAccountKey -}}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace $name -}}
+{{- /*
+Render this ONLY when the Secret does not already exist.
+
+Reading an existing value and re-declaring the resource is not enough: Helm 3
+refuses to take over an object annotated to a different release —
+
+  Secret "openg2p-insights-superset-svc" exists and cannot be imported into the
+  current release: invalid ownership metadata
+
+— so with both this chart and the registry chart declaring it, whichever
+installs SECOND fails outright. Skipping when it exists leaves it owned by
+whoever created it, and this release simply references it. Combined with
+resource-policy: keep, that also means an upgrade of the owning release does not
+delete it after this guard stops rendering it.
+*/ -}}
+{{- if and .Values.global.supersetServiceAccountSecretGenerate (not $existing) }}
+{{/*
+Password for the Superset service account this app authenticates as.
+
+Deliberately the SAME Secret name and key the registry chart renders. Both charts
+adopt an existing Secret and generate only when none is there, so either can be
+installed first: whichever runs first mints the password, the other picks it up,
+and the registry's dashboard-import Job converges the Superset account onto
+whatever value it finds.
+
+Never regenerated on upgrade — `lookup` reuses the current value. Rotating it
+would leave this app holding a credential the Superset account no longer has,
+and the Dashboards tab would go blank with a 401 nobody asked for.
+
+`lookup` sees nothing without a cluster (`helm template`, `--dry-run`), so a
+render shows a new password each time. Set this to false and manage the Secret
+yourself if you apply rendered manifests.
+*/}}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}
+  labels: {{- include "openg2p-insights.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+type: Opaque
+data:
+  {{ $key }}: {{ randAlphaNum 32 | b64enc }}
+{{- end }}

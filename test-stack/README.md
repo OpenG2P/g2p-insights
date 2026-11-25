@@ -7,10 +7,18 @@ the Insight backend, and the frontend on a single laptop with one command.
 
 | Service   | URL / port              | Credentials                                                              |
 |-----------|-------------------------|---------------------------------------------------------------------------|
-| Frontend  | http://localhost:8080   | —                                                                          |
+| Frontend  | http://localhost:5173   | Run with `make ui` (Vite dev server — live errors, no CORS)                |
 | Backend   | http://localhost:8000   | health: `GET /v1/insight/health`                                          |
 | Superset  | http://localhost:8088   | `admin` / `admin` (from `.env`)                                            |
 | Postgres  | `localhost:5433`        | `postgres` / `postgres` (registry DB), `insight_ai` / `insight` (read-only) |
+
+The Insight shell surfaces this as four tabs, all against the synthetic data:
+
+- **Dashboards** — Superset 6.1 dashboards embedded via the embedded SDK. Seed a
+  working sample with `make seed-dash` (see below).
+- **Maps** — an Evidence.dev choropleth (region → zone drill) embedded as an
+  iframe. Serve it with `make maps-host` (see below).
+- **Ask / Expert Lab** — governed AI NL→SQL and registered statistical functions.
 
 The Postgres container hosts three databases:
 
@@ -31,20 +39,36 @@ The container loads `.sql` files from `postgres/init/` in order at first start:
 
 - Docker Desktop 4.x or Docker Engine 24+
 - `make`, `python3` (3.11+), `jq` (optional, for `make smoke`)
-- `pip install psycopg httpx`  (for the seeders that run on the host)
+- Host deps for the seeders (they run on your machine, not in a container):
+  `pip3 install --user httpx 'psycopg[binary]'`
+  (Homebrew Python may need `--break-system-packages`, or use a venv. Use
+  `psycopg[binary]` — plain `psycopg` compiles against libpq and often fails on macOS.)
 
 ## First-run workflow
 
 ```bash
 cd test-stack
-cp .env.example .env             # then add ANTHROPIC_API_KEY if you have one
-make up                          # ~3-5 min on first build
+cp .env.example .env             # then add OPENROUTER_API_KEY if you have one
+make up-full                     # backend + Superset (~3-4 min); frontend runs via `make ui`
 make seed-md                     # snapshot Ethiopia geo from master-data.trial.openg2p.org
 make seed                        # 10k individuals (idempotent — TRUNCATEs first)
+make seed-dash                   # sample embedded "Registry Overview" dashboard in Superset
 make smoke                       # health + count check
-open http://localhost:8080       # frontend
+make ui                          # frontend dev server (Vite) — leave running (Terminal 1)
+make maps-host                   # build + serve the Evidence Maps surface on :3100 (Terminal 2)
+open http://localhost:5173       # frontend — all four tabs live
 open http://localhost:8088       # Superset (admin/admin)
 ```
+
+`make ui` and `make maps-host` both stay in the foreground — run them in
+separate terminals. On a memory-constrained Docker VM (Colima), serve Evidence
+from the host with `make maps-host` rather than the in-Docker `make maps`
+(building the static site inside the VM alongside Superset can OOM).
+
+`make seed-dash` uses form-login (session cookie), not JWT: Superset's REST
+API treats a Bearer token as *anonymous* here, so writes would be ownerless and
+lists return empty — the backend hit the same wall and works around it the same
+way (see `backend/.../superset_service.py`).
 
 ## Master Data Service
 
@@ -114,6 +138,6 @@ make up && make seed
   (column names, enums, geo, vulnerability flags) matches the source.
 - All personal data is synthetic. Names come from a fixed pool; phones and
   Fayda tokens are random strings shaped like the real thing.
-- `ANTHROPIC_API_KEY` is optional. When unset, the LLM service falls back
+- `OPENROUTER_API_KEY` is optional. When unset, the LLM service falls back
   to a deterministic stub — handy for plumbing tests that don't need real
   natural-language understanding.

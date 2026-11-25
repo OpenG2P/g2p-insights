@@ -73,9 +73,18 @@ async def classify_via_llm(
         return "unclear", "low", f"LLM classification failed: {exc!s}"
 
 
+# Kept in step with LlmConfig.model in openg2p_insight/config.py.
+DEFAULT_MODEL = "anthropic/claude-sonnet-4.5"
+
+
 async def _classify_via_llm_impl(stats: ColumnStats):
-    provider = os.environ.get("INSIGHT_LLM__PROVIDER", "anthropic")
-    api_key = os.environ.get("INSIGHT_LLM__API_KEY") or os.environ.get("ANTHROPIC_API_KEY", "")
+    # OpenRouter only, matching LlmService. This script used to default to
+    # provider="anthropic" and import the Anthropic SDK, which stopped being a
+    # dependency when Insight moved to OpenRouter — so its default path raised
+    # ImportError rather than classifying anything.
+    api_key = os.environ.get("INSIGHT_LLM__API_KEY") or os.environ.get(
+        "OPENROUTER_API_KEY", ""
+    )
     if not api_key:
         return "unclear", "low", "no LLM API key configured"
 
@@ -90,10 +99,7 @@ async def _classify_via_llm_impl(stats: ColumnStats):
         f"\nReturn JSON only."
     )
 
-    if provider == "openai_compatible":
-        body = await _call_openai(user_msg, api_key)
-    else:
-        body = await _call_anthropic(user_msg, api_key)
+    body = await _call_openai(user_msg, api_key)
 
     parsed = _extract_json(body)
     if not parsed:
@@ -104,27 +110,10 @@ async def _classify_via_llm_impl(stats: ColumnStats):
     return cls, conf, f"LLM: {reason}"
 
 
-async def _call_anthropic(user_msg: str, api_key: str) -> str:
-    from anthropic import AsyncAnthropic
-    client = AsyncAnthropic(api_key=api_key)
-    model = os.environ.get("INSIGHT_LLM__MODEL", "claude-opus-4-7")
-    r = await client.messages.create(
-        model=model,
-        max_tokens=200,
-        system=_LLM_SYSTEM,
-        messages=[{"role": "user", "content": user_msg}],
-    )
-    # Extract first text block
-    for block in r.content:
-        if block.type == "text":
-            return block.text
-    return ""
-
-
 async def _call_openai(user_msg: str, api_key: str) -> str:
     from openai import AsyncOpenAI
-    base_url = os.environ.get("INSIGHT_LLM__BASE_URL", "https://api.openai.com/v1")
-    model = os.environ.get("INSIGHT_LLM__MODEL", "qwen/qwen3-32b")
+    base_url = os.environ.get("INSIGHT_LLM__BASE_URL", "https://openrouter.ai/api/v1")
+    model = os.environ.get("INSIGHT_LLM__MODEL", DEFAULT_MODEL)
     client = AsyncOpenAI(api_key=api_key, base_url=base_url)
     r = await client.chat.completions.create(
         model=model,
