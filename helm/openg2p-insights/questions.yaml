@@ -32,7 +32,7 @@ questions:
     group: "Integrations"
   - variable: global.supersetServiceAccountSecret
     label: "Superset service account — Secret name"
-    description: "Kubernetes Secret holding that account's password. Must be the same Secret the registry chart used (analytics.dashboards.supersetAdminPasswordSecret), or Insights cannot list the dashboards it imported."
+    description: "Kubernetes Secret holding that account's password. Must be the same Secret the registry charts use (registry.dashboards.supersetAdminPasswordSecret; analytics.dashboards.supersetAdminPasswordSecret in older registry charts), or Insights cannot list the dashboards they imported."
     type: string
     default: openg2p-insights-superset-svc
     group: "Integrations"
